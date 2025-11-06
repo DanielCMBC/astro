@@ -1,465 +1,1025 @@
-import pygame
-from pygame.locals import *
-from OpenGL.GL import *
-from OpenGL.GLU import *
-import numpy as np
+import tkinter as tk
+from tkinter import ttk, messagebox
 import pandas as pd
-from astroquery.gaia import Gaia
-from astroquery.skyview import SkyView
-from astroquery.simbad import Simbad
-from astropy.io import fits
-import astropy.units as u
-from astropy.coordinates import SkyCoord
-from scipy.spatial import cKDTree
-import os
-import logging
-from tenacity import retry, stop_after_attempt, wait_exponential
-from io import StringIO, BytesIO
+import numpy as np
 import requests
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import threading
-from PIL import Image
+from matplotlib.figure import Figure
+from matplotlib import animation
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from scipy.optimize import newton
+import logging
+from io import StringIO
+import os
 import time
+import shutil
+import json
+from tenacity import retry, stop_after_attempt, wait_exponential
+from astroquery.mast import Observations
+from astropy.io import fits
 
-# --- Scientific & Configuration Constants ---
+
 H_PLANCK = 6.626e-34
 C_LIGHT = 3e8
 K_BOLTZMANN = 1.381e-23
-SCREEN_WIDTH, SCREEN_HEIGHT = 1920, 1080
-STAR_CACHE_FILE = "exoplanet_hosts_cache.feather" # Renamed for clarity
-EXOPLANET_CACHE_FILE = "exoplanet_complete_cache.feather"
-SELECTION_THRESHOLD = 0.5
-SYSTEM_VIEW_DISTANCE = 3.0  # Increased distance to trigger 3D system view
-PLANET_LOD_DISTANCE = 0.05 # Distance to switch from billboard to 3D sphere
-ORBIT_ANIMATION_SPEED = 0.1 
+SOLAR_TEMP = 5778
 
-# --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', handlers=[logging.FileHandler('3d_navigator.log')])
 
-# --- Data Fetching and Processing ---
-class DataProvider:
-    @staticmethod
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def fetch_exoplanet_data():
-        logging.info("Querying NASA Exoplanet Archive for all confirmed exoplanet hosts...")
-        try:
-            url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
-            params = {'query': "select pl_name, hostname, sy_dist, ra, dec, pl_orbper, pl_orbsmax, pl_orbeccen, discoverymethod, disc_year from ps", 'format': 'csv'}
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            df = pd.read_csv(StringIO(response.text))
-            df.to_feather(EXOPLANET_CACHE_FILE)
-            logging.info(f"Fetched {len(df)} exoplanet records.")
-            return df
-        except Exception as e: logging.error(f"Exoplanet data fetch failed: {e}"); raise
+# These are the files you just uploaded.
+PLANET_DATA_FILE = "exoplanets_with_atmo_fields.csv"
+ATMOSPHERE_JSON_FILE = "atmospheric_signatures.json"
+MOLECULE_DATA_FILE = "planet_molecules.csv"
 
-    @staticmethod
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def fetch_gaia_data_for_hosts(exoplanet_hosts_df):
-        logging.info(f"Querying Gaia Archive for {len(exoplanet_hosts_df)} exoplanet host stars...")
-        host_list = ", ".join([f"'{name}'" for name in exoplanet_hosts_df['hostname'].unique()])
+
+try:
+    with open(ATMOSPHERE_JSON_FILE, 'r') as f:
+        ATMOSPHERIC_SIGNATURES = json.load(f)
+    logging.info(f"Successfully loaded {len(ATMOSPHERIC_SIGNATURES)} signatures from {ATMOSPHERE_JSON_FILE}")
+except Exception as e:
+    logging.error(f"FATAL ERROR: Could not read {ATMOSPHERE_JSON_FILE}. {e}")
+    messagebox.showerror("File Error", f"Could not read {ATMOSPHERE_JSON_FILE}. App will exit.")
+    ATMOSPHERIC_SIGNATURES = {} # Fallback
+    exit()
+
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler('exoplanet_analyzer.log', mode='w')] 
+)
+
+class ExoplanetAnalyzer:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NASA Exoplanet Archive Analyzer (Local Version)")
+        self.root.geometry("1280x900")
+        self.root.minsize(1000, 700)
+        self.ani = None
         
-        # This is a complex cross-match query. It joins Gaia's catalog with a list of names.
-        # It's not perfect but is the best way to get Gaia data for a named list.
-        query = f"""
-        SELECT
-            i.original_ext_source_id as hostname, g.source_id, g.ra, g.dec, g.parallax,
-            g.phot_g_mean_mag, g.bp_rp, g.teff_gspphot, g.lum_gspphot, g.radius_gspphot
-        FROM gaiadr3.gaia_source AS g
-        JOIN gaiadr3.dr2_neighbourhood AS n ON g.source_id = n.dr3_source_id
-        JOIN external.gaiadr2_astrometric_params AS i ON n.dr2_source_id = i.source_id
-        WHERE i.original_ext_source_id IN ({host_list})
-        """
-        job = Gaia.launch_job_async(query)
-        df = job.get_results().to_pandas()
-        df.to_feather(STAR_CACHE_FILE)
-        logging.info(f"Fetched Gaia data for {len(df)} host stars.")
-        return df
+     
+        self.planetary_data, self.molecule_detections = self.load_local_data()
 
-    @staticmethod
-    def get_data():
-        if os.path.exists(EXOPLANET_CACHE_FILE): exoplanet_data = pd.read_feather(EXOPLANET_CACHE_FILE)
-        else: exoplanet_data = DataProvider.fetch_exoplanet_data()
-        
-        # Filter for unique hosts to query Gaia
-        unique_hosts = exoplanet_data.drop_duplicates(subset=['hostname'])
-
-        if os.path.exists(STAR_CACHE_FILE):
-            star_data = pd.read_feather(STAR_CACHE_FILE)
+        if not self.planetary_data.empty:
+            self.host_stars = sorted(self.planetary_data['hostname'].dropna().unique())
         else:
-            star_data = DataProvider.fetch_gaia_data_for_hosts(unique_hosts)
-
-        # Merge Gaia data back into the main star dataframe, keeping only hosts found in Gaia
-        merged_data = pd.merge(star_data, unique_hosts[['hostname']], on='hostname', how='inner').drop_duplicates(subset=['hostname'])
-        merged_data['x'], merged_data['y'], merged_data['z'] = DataProvider.spherical_to_cartesian(merged_data['ra'], merged_data['dec'], merged_data['parallax'])
-        merged_data['is_exoplanet_host'] = True # All stars are hosts now
-        
-        logging.info(f"Final dataset contains {len(merged_data)} exoplanet host stars with Gaia data.")
-        return merged_data, exoplanet_data
-
-    @staticmethod
-    def spherical_to_cartesian(ra, dec, parallax):
-        parallax_arcsec = parallax / 1000.0
-        dist_pc = np.where(parallax_arcsec > 0, 1.0 / parallax_arcsec, 1e9)
-        return DataProvider.spherical_to_cartesian_dist(ra, dec, dist_pc)
-        
-    @staticmethod
-    def spherical_to_cartesian_dist(ra, dec, dist_pc):
-        ra_rad, dec_rad = np.deg2rad(ra), np.deg2rad(dec)
-        x = dist_pc*np.cos(ra_rad)*np.cos(dec_rad); y = dist_pc*np.sin(ra_rad)*np.cos(dec_rad); z = dist_pc*np.sin(dec_rad)
-        return x, y, z
-
-# --- Texture Management ---
-class TextureManager:
-    def __init__(self):
-        self.textures = {}
-        self._load_textures()
-
-    def _load_textures(self):
-        self.textures['planet'] = self._create_planet_texture((120, 180, 255))
-        self.textures['gas_giant'] = self._create_planet_texture((210, 200, 170))
-        # Add more textures here (e.g., from files)
-        
-    def _create_texture_from_surface(self, surf):
-        tex_id = glGenTextures(1)
-        tex_data = pygame.image.tostring(surf, "RGBA", True)
-        glBindTexture(GL_TEXTURE_2D, tex_id)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGBA, surf.get_width(), surf.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, tex_data)
-        return tex_id
-
-    def _create_planet_texture(self, color):
-        surf = pygame.Surface((128, 128), pygame.SRCALPHA)
-        pygame.draw.circle(surf, color, (64, 64), 64)
-        # Add some simple shading
-        for i in range(32):
-            alpha = 100 - (i * 3)
-            pygame.draw.circle(surf, (0, 0, 0, alpha), (75, 55), 50 - i)
-        return self._create_texture_from_surface(surf)
-    
-    def get(self, name):
-        return self.textures.get(name)
-
-# --- UI and Visualization Panel (InfoPanel class remains largely the same) ---
-class InfoPanel:
-    def __init__(self, screen_width, screen_height, all_star_data):
-        self.width, self.height = 450, screen_height
-        self.x, self.y = screen_width - self.width, 0
-        self.font_big = pygame.font.Font(None, 34); self.font_med = pygame.font.Font(None, 28); self.font_small = pygame.font.Font(None, 24)
-        self.all_star_data = all_star_data
-        self.tabs = ["Details", "Orbit Viewer", "HR Diagram", "Spectrum", "Sky View"]
-        self.tab_rects = {}; self.active_tab = "Details"
-        self.sky_view_thread = None; self.simbad_thread = None
-        self.clear_selection()
-
-    def clear_selection(self):
-        self.selected_star = None; self.visuals = {}; self.planets_in_system = pd.DataFrame(); self.common_name = None
-
-    def set_selected_star(self, star_series, exoplanet_data):
-        if star_series is None: self.clear_selection(); return
-        if self.selected_star is not None and self.selected_star['source_id'] == star_series['source_id']: return
-        self.selected_star = star_series; self.active_tab = "Details"; self.visuals = {'Sky View': "Fetching Sky View..."}; self.common_name = "Fetching name..."
-        self.planets_in_system = exoplanet_data[exoplanet_data['hostname'] == self.selected_star['hostname']].copy()
-        self.sky_view_thread = threading.Thread(target=self.create_sky_view_image, args=(star_series,)); self.sky_view_thread.start()
-        self.simbad_thread = threading.Thread(target=self.fetch_common_name, args=(star_series,)); self.simbad_thread.start()
-
-    def fetch_common_name(self, star_series):
-        try:
-            coord = SkyCoord(ra=star_series['ra']*u.degree, dec=star_series['dec']*u.degree, frame='icrs')
-            result_table = Simbad.query_region(coord, radius='2s')
-            if result_table and len(result_table) > 0: self.common_name = result_table[0]['MAIN_ID']
-            else: self.common_name = star_series['hostname']
-        except Exception: self.common_name = star_series['hostname']
-
-    def _get_visual_for_tab(self, tab_name):
-        if tab_name not in self.visuals: self.generate_visual_for_tab(tab_name)
-        return self.visuals.get(tab_name)
-
-    def generate_visual_for_tab(self, tab_name):
-        if self.selected_star is None: return
-        if tab_name == "HR Diagram": self.visuals[tab_name] = self.create_hr_diagram()
-        elif tab_name == "Spectrum": self.visuals[tab_name] = self.create_black_body_spectrum()
-        elif tab_name == "Orbit Viewer": self.visuals[tab_name] = self.create_orbit_view()
-
-    def _convert_mpl_to_pygame(self, fig):
-        buf = BytesIO(); fig.savefig(buf, format="png", transparent=True, dpi=120); buf.seek(0)
-        surface = pygame.image.load(buf).convert_alpha(); plt.close(fig); return surface
-
-    def create_hr_diagram(self):
-        fig, ax = plt.subplots(figsize=(4, 3), facecolor='#1E1E1E'); ax.set_facecolor("#0A0A0A")
-        ax.scatter(self.all_star_data['teff_gspphot'], self.all_star_data['lum_gspphot'], alpha=0.3, s=15, c=self.all_star_data['bp_rp'], cmap='RdYlBu_r')
-        star = self.selected_star
-        if pd.notna(star['teff_gspphot']) and pd.notna(star['lum_gspphot']):
-            ax.scatter(star['teff_gspphot'], star['lum_gspphot'], c='lime', s=80, edgecolor='white', zorder=5)
-        ax.set_yscale('log'); ax.set_xscale('log'); ax.set_xlim(ax.get_xlim()[::-1])
-        ax.set_title("Hertzsprung-Russell Diagram", color='white', fontsize=10)
-        ax.tick_params(axis='both', colors='gray', labelsize=7); fig.tight_layout(pad=0.5); return self._convert_mpl_to_pygame(fig)
-        
-    def create_black_body_spectrum(self):
-        fig, ax = plt.subplots(figsize=(4, 3), facecolor='#1E1E1E'); ax.set_facecolor("#0A0A0A")
-        T = self.selected_star['teff_gspphot']
-        if pd.isna(T): ax.text(0.5, 0.5, "Temp. data unavailable", color='white', ha='center')
-        else:
-            wavelengths = np.linspace(100e-9, 2000e-9, 400)
-            radiance = (2*H_PLANCK*C_LIGHT**2/wavelengths**5)/(np.exp(H_PLANCK*C_LIGHT/(wavelengths*K_BOLTZMANN*T))-1)
-            ax.plot(wavelengths*1e9, radiance/np.max(radiance), color='orange'); ax.set_ylim(0, 1.1)
-        ax.set_title(f"Stellar Spectrum (T≈{T:.0f} K)", color='white', fontsize=10)
-        ax.grid(True, linestyle='--', alpha=0.3); ax.tick_params(axis='both', colors='gray', labelsize=7); fig.tight_layout(pad=0.5); return self._convert_mpl_to_pygame(fig)
-        
-    def create_orbit_view(self):
-        fig, ax = plt.subplots(figsize=(4, 4), facecolor='#1E1E1E'); ax.set_facecolor("#00001A")
-        if self.planets_in_system.empty: ax.text(0.5, 0.5, "No planetary data", color='white', ha='center', va='center', transform=ax.transAxes)
-        else:
-            ax.plot(0, 0, 'o', color='gold', markersize=15, label='Star'); max_a = 0
-            for _, p in self.planets_in_system.iterrows():
-                a=p['pl_orbsmax']; ecc=p['pl_orbeccen'] if pd.notna(p['pl_orbeccen']) else 0.0
-                if pd.notna(a):
-                    max_a=max(max_a, a); b=a*np.sqrt(1-ecc**2); theta=np.linspace(0,2*np.pi,360)
-                    x_orb=a*(np.cos(theta)-ecc); y_orb=b*np.sin(theta); ax.plot(x_orb, y_orb, '--', alpha=0.7, label=p['pl_name'])
-            ax.set_aspect('equal');
-            if max_a>0: ax.set_xlim(-max_a*1.2, max_a*1.2); ax.set_ylim(-max_a*1.2, max_a*1.2)
-            if len(self.planets_in_system)<6: ax.legend(fontsize=7, labelcolor='white', frameon=False)
-        fig.tight_layout(pad=0.5); return self._convert_mpl_to_pygame(fig)
-
-    def create_sky_view_image(self, star_series):
-        try:
-            ra, dec = star_series['ra'], star_series['dec']; surveys = ['Pan-STARRS DR2 i', 'DSS2 Red']
-            for survey in surveys:
-                try:
-                    images = SkyView.get_images(position=f"{ra} {dec}", survey=survey, pixels=512)
-                    if images:
-                        data=np.sqrt(images[0][0].data); data=np.nan_to_num(data)
-                        norm_data=(data-np.min(data))/(np.max(data)-np.min(data))*255
-                        img=Image.fromarray(norm_data.astype(np.uint8)).convert('RGB')
-                        self.visuals['Sky View']=pygame.image.fromstring(img.tobytes(), img.size, img.mode); return
-                except Exception as e: logging.warning(f"Failed to fetch from {survey}: {e}")
-            self.visuals['Sky View'] = "Image not found"
-        except Exception: self.visuals['Sky View'] = "Error loading image"
-
-    def handle_click(self, pos):
-        if not self.selected_star: return
-        for name, rect in self.tab_rects.items():
-            if rect.collidepoint(pos): self.active_tab=name; self.generate_visual_for_tab(name); break
-    
-    def draw_details_tab(self, surface, y_offset):
-        dist_pc = 1000.0 / self.selected_star['parallax']
-        details = [("Gaia Source ID:", f"{self.selected_star['source_id']}"), ("Distance:", f"{dist_pc:.2f} pc"),
-                   ("Effective Temp:", f"{self.selected_star['teff_gspphot']:.0f} K"), ("Luminosity:", f"{self.selected_star['lum_gspphot']:.3f} (Sun)"),
-                   ("Radius:", f"{self.selected_star['radius_gspphot']:.3f} (Sun)")]
-        for key, val in details:
-            surface.blit(self.font_med.render(key, True, (200,200,200)), (self.x+15, y_offset)); surface.blit(self.font_med.render(val, True, (255,255,255)), (self.x+220, y_offset)); y_offset+=35
-        if not self.planets_in_system.empty:
-            pygame.draw.line(surface,(80,80,80),(self.x+10,y_offset),(self.x+self.width-10,y_offset),1); y_offset+=15
-            surface.blit(self.font_med.render("Known Planets:", True,(255,255,255)),(self.x+15,y_offset)); y_offset+=30
-            for _, p in self.planets_in_system.head(8).iterrows():
-                p_text=f"- {p['pl_name']} ({p['discoverymethod']}, {p['disc_year']:.0f})"; surface.blit(self.font_small.render(p_text, True,(180,180,220)),(self.x+20,y_offset)); y_offset+=28
-
-    def draw(self, surface):
-        if self.selected_star is None: return
-        panel_rect=pygame.Rect(self.x,self.y,self.width,self.height); pygame.draw.rect(surface,(30,30,30,230),panel_rect); pygame.draw.rect(surface,(80,80,80),panel_rect,2)
-        y_offset=15; title=self.common_name or self.selected_star['hostname']
-        surface.blit(self.font_big.render(title, True,(255,255,255)),(self.x+15,y_offset)); y_offset+=50
-        pygame.draw.line(surface,(80,80,80),(self.x,y_offset),(self.x+self.width,y_offset),2)
-        tab_y, tab_x = y_offset, self.x
-        for name in self.tabs:
-            surf = self.font_small.render(name, True,(255,255,255) if self.active_tab==name else (150,150,150))
-            w,h=surf.get_size(); rect=pygame.Rect(tab_x,tab_y,w+20,h+10)
-            if self.active_tab==name: pygame.draw.rect(surface,(50,50,50),rect); pygame.draw.line(surface,(0,150,255),(rect.left,rect.bottom-2),(rect.right,rect.bottom-2),2)
-            surface.blit(surf,(tab_x+10,tab_y+5)); self.tab_rects[name]=rect; tab_x+=rect.width
-        y_offset+=45; content_y=y_offset+20
-        if self.active_tab == "Details": self.draw_details_tab(surface, content_y)
-        else:
-            visual = self._get_visual_for_tab(self.active_tab)
-            if isinstance(visual,pygame.Surface): surface.blit(visual,(self.x+(self.width-visual.get_width())//2,content_y))
-            elif isinstance(visual,str): status = self.font_med.render(visual,True,(200,200,200)); surface.blit(status,(self.x+(self.width-status.get_width())//2,content_y+150))
-
-# --- Planetary System Renderer ---
-class SystemRenderer:
-    def __init__(self, texture_manager):
-        self.texture_manager = texture_manager
-        self.quadric = gluNewQuadric()
-        gluQuadricTexture(self.quadric, GL_TRUE)
-
-    def calculate_planet_position(self, planet_data, current_time):
-        a=planet_data['pl_orbsmax'] if pd.notna(planet_data['pl_orbsmax']) else 1.0; ecc=planet_data['pl_orbeccen'] if pd.notna(planet_data['pl_orbeccen']) else 0.0
-        period=planet_data['pl_orbper'] if pd.notna(planet_data['pl_orbper']) else 365.25
-        if period<=0: return np.array([a*(1.0-ecc),0.0,0.0])
-        mean_anomaly = (2*np.pi/period)*(current_time%period); eccentric_anomaly = mean_anomaly+ecc*np.sin(mean_anomaly)
-        x=a*(np.cos(eccentric_anomaly)-ecc); y=a*np.sqrt(1-ecc**2)*np.sin(eccentric_anomaly)
-        return np.array([x,y,0.0])*0.005 # Scale AU to parsecs
-
-    def draw_billboard(self, position, size, texture_id):
-        modelview=glGetFloatv(GL_MODELVIEW_MATRIX)
-        up=np.array([modelview[0][1],modelview[1][1],modelview[2][1]])*size; right=np.array([modelview[0][0],modelview[1][0],modelview[2][0]])*size
-        glBindTexture(GL_TEXTURE_2D, texture_id)
-        glBegin(GL_QUADS)
-        glTexCoord2f(0,1); glVertex3fv(position-right-up); glTexCoord2f(1,1); glVertex3fv(position+right-up)
-        glTexCoord2f(1,0); glVertex3fv(position+right+up); glTexCoord2f(0,0); glVertex3fv(position-right+up)
-        glEnd()
-
-    def draw_sphere(self, position, size, texture_id):
-        glPushMatrix(); glTranslatef(*position)
-        glBindTexture(GL_TEXTURE_2D, texture_id)
-        gluSphere(self.quadric, size, 32, 32); glPopMatrix()
-
-    def draw_system(self, star, planets, current_time, cam_pos):
-        star_pos = star[['x','y','z']].values.astype(np.float32)
-        glEnable(GL_TEXTURE_2D); glDepthMask(GL_FALSE)
-        
-        # Draw Orbit Lines
-        glDisable(GL_TEXTURE_2D)
-        glColor4f(1.0, 1.0, 1.0, 0.2)
-        for _, p in planets.iterrows():
-            a=p['pl_orbsmax']; ecc=p['pl_orbeccen'] if pd.notna(p['pl_orbeccen']) else 0.0
-            if pd.notna(a):
-                glBegin(GL_LINE_LOOP)
-                for i in range(361):
-                    theta = np.deg2rad(i); r = (a * (1-ecc**2)) / (1 + ecc * np.cos(theta))
-                    x = r * np.cos(theta); y = r * np.sin(theta)
-                    glVertex3fv(star_pos + np.array([x,y,0.0])*0.005)
-                glEnd()
-        glEnable(GL_TEXTURE_2D)
-
-        # Draw Planets (LOD)
-        for _, planet in planets.iterrows():
-            planet_pos_local = self.calculate_planet_position(planet, current_time)
-            planet_pos_world = star_pos + planet_pos_local
-            dist_to_cam = np.linalg.norm(planet_pos_world - cam_pos)
+            self.host_stars = []
+            # Error is handled in the load function
             
-            tex_id = self.texture_manager.get('gas_giant') if planet['pl_orbsmax'] > 1.0 else self.texture_manager.get('planet')
+        self.setup_ui()
 
-            if dist_to_cam < PLANET_LOD_DISTANCE:
-                self.draw_sphere(planet_pos_world, 0.0005, tex_id)
-            else:
-                self.draw_billboard(planet_pos_world, 0.01, tex_id)
+        if self.host_stars:
+            self.star_var.set(self.host_stars[0])
+            self.update_planets()
+
+    def load_local_data(self) -> (pd.DataFrame, pd.DataFrame):
+        """Loads all data from the local CSV files."""
+        logging.info(f"Attempting to load data from local files...")
         
-        glDepthMask(GL_TRUE); glDisable(GL_TEXTURE_2D)
-
-# --- Main Application Class ---
-class StellarNavigator3D:
-    def __init__(self):
-        pygame.init(); pygame.font.init()
-        self.display = (SCREEN_WIDTH, SCREEN_HEIGHT)
-        pygame.display.set_mode(self.display, DOUBLEBUF | OPENGL)
-        pygame.display.set_caption("3D Stellar Navigator | Click on a star to select")
-
-        self.init_gl()
-        self.camera_pos = np.array([0.0,0.0,-5.0], dtype=np.float32); self.camera_rot = np.array([0.0,0.0], dtype=np.float32)
-        self.zoom_speed, self.move_speed, self.rotation_speed = 0.5, 0.1, 0.2
-        self.mouse_dragging = False; self.last_mouse_pos = (0, 0)
+        if not os.path.exists(PLANET_DATA_FILE) or not os.path.exists(MOLECULE_DATA_FILE):
+            error_msg = f"FATAL ERROR: Data file not found."
+            logging.error(error_msg)
+            messagebox.showerror("File Not Found", f"Could not find '{PLANET_DATA_FILE}' or '{MOLECULE_DATA_FILE}'.\nPlease make sure they are in the same folder as the script.")
+            self.root.destroy()
+            return pd.DataFrame(), pd.DataFrame()
         
-        self.star_data, self.exoplanet_data = DataProvider.get_data()
-        self.star_positions = self.star_data[['x','y','z']].values.astype(np.float32)
-        self.prepare_star_buffers()
+        try:
+            # Load the main planet "phonebook"
+            planets_df = pd.read_csv(PLANET_DATA_FILE, comment='#')
+            logging.info(f"Successfully loaded {len(planets_df)} records from {PLANET_DATA_FILE}.")
+
+            # Load the molecule detection "join table"
+            molecules_df = pd.read_csv(MOLECULE_DATA_FILE, comment='#')
+            logging.info(f"Successfully loaded {len(molecules_df)} records from {MOLECULE_DATA_FILE}.")
+
+       
+            # Rename columns from the CSV to match what the script expects
+            column_rename_map = {
+                'st_teff': 'teff_gspphot',
+                'st_lum': 'lum_gspphot',
+                'st_rad': 'radius_gspphot',
+                'sy_bp_rp': 'bp_rp'
+            }
+            
+            cols_to_rename = {k: v for k, v in column_rename_map.items() if k in planets_df.columns}
+            planets_df = planets_df.rename(columns=cols_to_rename)
+
+            # Ensure all expected columns exist, adding NaNs if they don't
+            expected_cols = ['pl_name', 'hostname', 'pl_orbper', 'pl_orbsmax', 'pl_radj',
+                             'pl_bmassj', 'disc_year', 'pl_orbeccen', 'st_mass', 'st_rad', 'st_age',
+                             'teff_gspphot', 'st_spectype', 'sy_dist', 'lum_gspphot', 'radius_gspphot', 'bp_rp']
+            
+            for col in expected_cols:
+                if col not in planets_df.columns:
+                    logging.warning(f"Column '{col}' not found in CSV. Creating it with NaN values.")
+                    planets_df[col] = np.nan
+            
+            return planets_df, molecules_df
+
+        except Exception as e:
+            logging.error(f"Failed to read or process local CSV files: {e}", exc_info=True)
+            messagebox.showerror("Data Error", f"Failed to read local data files.\nError: {e}")
+            self.root.destroy()
+            return pd.DataFrame(), pd.DataFrame()
+
+    def fetch_atmospheric_data(self, planet_name: str) -> pd.DataFrame:
+        """
+        NEW: Gets molecular composition data from the local 'planet_molecules.csv'.
+        This function no longer queries the internet.
+        """
+        logging.info(f"Fetching local molecular data for {planet_name}...")
+        if self.molecule_detections.empty:
+            logging.warning("Molecule detections dataframe is empty.")
+            return pd.DataFrame()
         
-        self.texture_manager = TextureManager()
-        self.info_panel = InfoPanel(SCREEN_WIDTH, SCREEN_HEIGHT, self.star_data)
-        self.system_renderer = SystemRenderer(self.texture_manager)
+        # Filter the local dataframe for the selected planet
+        detections = self.molecule_detections[
+            self.molecule_detections['pl_name'].str.lower() == planet_name.lower()
+        ]
+        
+        if detections.empty:
+            logging.info(f"No local molecule detections found for {planet_name}.")
+            return pd.DataFrame()
+            
+        # Re-format the dataframe to match the old structure (molecule, abundance)
+        # Since we only have *detections*, we'll just plot them with a placeholder abundance of 1
+        final_df = detections[['molecule']].copy()
+        final_df['abundance'] = 1.0 
+        final_df['abundance_err'] = 0
+        
+        logging.info(f"Found {len(final_df)} local molecule detections for {planet_name}.")
+        return final_df
 
-    def init_gl(self):
-        glMatrixMode(GL_PROJECTION); gluPerspective(45,(self.display[0]/self.display[1]),0.1,2000.0)
-        glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST); glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_POINT_SMOOTH)
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def fetch_spectroscopy_data(self, planet_name: str) -> pd.DataFrame:
+        """
+        Gets transmission spectroscopy data from MAST archive (Hubble/JWST).
+        This function STILL queries the internet, as it's for real-time scientific data.
+        """
+        formatted_planet_name = planet_name.replace(" ", "")
+        logging.info(f"Attempting MAST query for {planet_name} as '{formatted_planet_name}'")
+        
+        shutil.rmtree('mastDownload', ignore_errors=True)
 
-    def prepare_star_buffers(self):
-        self.vbo_pos, self.vbo_color, self.num_stars = self._create_vbos(self.star_data)
+        try:
+            obs_table = Observations.query_criteria(
+                target_name=formatted_planet_name,
+                obs_collection=["HST", "JWST"],
+                dataproduct_type="spectrum",
+                calib_level=3 
+            )
 
-    def _create_vbos(self, df):
-        if df.empty: return None, None, 0
-        positions = df[['x','y','z']].values.astype(np.float32)
-        colors = np.array([self.get_star_color(row.bp_rp) for row in df.itertuples()], dtype=np.float32)
-        vbo_pos=glGenBuffers(1); glBindBuffer(GL_ARRAY_BUFFER,vbo_pos); glBufferData(GL_ARRAY_BUFFER,positions.nbytes,positions,GL_STATIC_DRAW)
-        vbo_color=glGenBuffers(1); glBindBuffer(GL_ARRAY_BUFFER,vbo_color); glBufferData(GL_ARRAY_BUFFER,colors.nbytes,colors,GL_STATIC_DRAW)
-        return vbo_pos, vbo_color, len(df)
-    
-    @staticmethod
-    def get_star_color(bp_rp):
-        norm_val = (np.clip(bp_rp, -0.5, 4.0) + 0.5) / 4.5
-        r=1.0; g=np.clip(1.0-norm_val*1.5,0.0,1.0); b=np.clip(1.0-norm_val*3.0,0.0,1.0)
-        return r,g,b
+            if len(obs_table) == 0:
+                logging.warning(f"No JWST or HST spectrum data found on MAST for {formatted_planet_name}")
+                return pd.DataFrame()
+            logging.info(f"Found {len(obs_table)} observations on MAST for {formatted_planet_name}.")
 
-    def _draw_vbo(self, vbo_pos, vbo_color, num_points):
-        if not vbo_pos or not num_points: return
-        glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY)
-        glBindBuffer(GL_ARRAY_BUFFER,vbo_pos); glVertexPointer(3,GL_FLOAT,0,None); glBindBuffer(GL_ARRAY_BUFFER,vbo_color); glColorPointer(3,GL_FLOAT,0,None)
-        glDrawArrays(GL_POINTS,0,num_points)
-        glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_VERTEX_ARRAY)
+            data_products = Observations.get_product_list(obs_table)
+            logging.info(f"Found {len(data_products)} total data products.")
+            
+            science_products = None
+            for suffix in ['x1d.fits', 'x1dints.fits', 's2d.fits']: 
+                 current_science_products = Observations.filter_products(
+                     data_products,
+                     productType="SCIENCE",
+                     productSubGroupDescription=suffix.upper()
+                 )
+                 if len(current_science_products) > 0:
+                     science_products = current_science_products
+                     logging.info(f"Found {len(science_products)} '{suffix}' files. Proceeding with the first one.")
+                     break
+            
+            if science_products is None or len(science_products) == 0:
+                logging.warning(f"Found observations for {formatted_planet_name}, but no suitable FITS products ('x1d', 'x1dints', 's2d').")
+                return pd.DataFrame()
 
-    def draw_scene(self):
-        glPointSize(5.0); self._draw_vbo(self.vbo_pos, self.vbo_color, self.num_stars)
-        glPointSize(10); glColor3f(1.0, 1.0, 0.0); glBegin(GL_POINTS); glVertex3f(0.0,0.0,0.0); glEnd()
-        cam_world_pos = self.get_camera_world_position()
-        for _, star in self.star_data.iterrows():
-            star_pos = star[['x','y','z']].values.astype(np.float32)
-            if np.linalg.norm(star_pos-cam_world_pos) < SYSTEM_VIEW_DISTANCE:
-                planets = self.exoplanet_data[self.exoplanet_data['hostname']==star['hostname']]
-                if not planets.empty: self.system_renderer.draw_system(star, planets, time.time()*ORBIT_ANIMATION_SPEED, cam_world_pos)
+            target_product = science_products[0]
+            logging.info(f"Attempting to download: {target_product['productFilename']}")
+            manifest = Observations.download_products(
+                target_product,
+                download_dir="." 
+            )
+            
+            if manifest is None or len(manifest) == 0 or 'Local Path' not in manifest.columns or manifest[0]['Status'] != 'COMPLETE':
+                 logging.error(f"MAST download failed or incomplete for {target_product['productFilename']}. Status: {manifest[0]['Status'] if manifest is not None and len(manifest)>0 else 'Unknown'}")
+                 shutil.rmtree('mastDownload', ignore_errors=True)
+                 return pd.DataFrame()
+            
+            local_file_path = manifest[0]['Local Path']
+            logging.info(f"Successfully downloaded to: {local_file_path}")
+            
+            with fits.open(local_file_path) as hdul:
+                data_hdu = None
+                hdu_info = []
+                for i, hdu in enumerate(hdul):
+                    hdu_info.append(f"HDU {i}: Name={hdu.name}, Type={type(hdu).__name__}, Columns={hdu.columns.names if hasattr(hdu, 'columns') else 'N/A'}")
+                    if isinstance(hdu, fits.BinTableHDU) and 'WAVELENGTH' in [c.upper() for c in hdu.columns.names]:
+                        data_hdu = hdu
+                        logging.info(f"Found spectrum data in FITS extension {i} ('{hdu.name}') (BinTableHDU)")
+                        break
+                
+                if data_hdu is None:
+                    logging.warning("No BinTableHDU with WAVELENGTH found. Looking for 'SCI' extension...")
+                    for i, hdu in enumerate(hdul):
+                         if hdu.name == 'SCI':
+                             logging.warning(f"Found 'SCI' extension at index {i}. This might be 2D data requiring complex parsing (not fully supported).")
+                             break 
 
-    def get_camera_world_position(self):
-        modelview = glGetFloatv(GL_MODELVIEW_MATRIX)
-        return np.linalg.inv(np.array(modelview))[3,:3]
+                if data_hdu is None:
+                    logging.error(f"Could not find a suitable data table (BinTableHDU with WAVELENGTH) in {local_file_path}. HDU structure: {'; '.join(hdu_info)}")
+                    shutil.rmtree('mastDownload', ignore_errors=True)
+                    return pd.DataFrame()
 
-    def handle_input(self):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return False
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    self.mouse_dragging = True
-                    self.last_mouse_pos = event.pos
-                    if event.pos[0] >= self.info_panel.x:
-                        self.info_panel.handle_click(event.pos)
+                data = data_hdu.data
+                if data.dtype.byteorder not in ('=', '|'):
+                    df = pd.DataFrame(data.byteswap().newbyteorder())
+                    logging.debug("Swapped byte order for FITS data.")
+                else:
+                    df = pd.DataFrame(data)
+                logging.info(f"Successfully read data from HDU '{data_hdu.name}'. DataFrame shape: {df.shape}")
+
+            shutil.rmtree('mastDownload', ignore_errors=True)
+            logging.info("Cleaned up mastDownload directory.")
+
+            out_df = pd.DataFrame()
+            col_map = {
+                'wavelength': ['WAVELENGTH', 'wave'],
+                'flux': ['FLUX', 'flux'],
+                'flux_err': ['FLUX_ERROR', 'FLUX_ERR', 'err', 'error']
+            }
+            
+            df_cols_upper = [str(c).upper() for c in df.columns]
+            for standard_col, possible_names in col_map.items():
+                found = False
+                for name in possible_names:
+                    if name.upper() in df_cols_upper:
+                        original_col_name = df.columns[df_cols_upper.index(name.upper())]
+                        out_df[standard_col] = df[original_col_name]
+                        logging.info(f"Mapped FITS column '{original_col_name}' to '{standard_col}'")
+                        found = True
+                        break
+                if not found and standard_col == 'flux_err':
+                     logging.warning(f"Could not map '{standard_col}' column. Will set errors to NaN.")
+                     out_df['flux_err'] = np.nan
+                elif not found:
+                     logging.error(f"CRITICAL: Could not map required column '{standard_col}'. Available FITS columns: {list(df.columns)}")
+                     return pd.DataFrame()
+
+            unit = 'um' 
+            wl_col_name_fits = None
+            try:
+                wl_cols_upper_fits = [str(c).upper() for c in data_hdu.columns.names]
+                for name in col_map['wavelength']:
+                     if name.upper() in wl_cols_upper_fits:
+                         wl_col_name_fits = data_hdu.columns.names[wl_cols_upper_fits.index(name.upper())]
+                         break
+                
+                if wl_col_name_fits:
+                    wl_col_index_fits = list(data_hdu.columns.names).index(wl_col_name_fits)
+                    unit_key = f'TUNIT{wl_col_index_fits + 1}'
+                    if unit_key in data_hdu.header:
+                         unit = data_hdu.header[unit_key]
+                         logging.info(f"Detected wavelength unit '{unit}' from FITS header key '{unit_key}'.")
                     else:
-                        self.select_star_at_pos(event.pos)
-                elif event.button == 4:
-                    self.camera_pos[2] += self.zoom_speed
-                elif event.button == 5:
-                    self.camera_pos[2] -= self.zoom_speed
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                self.mouse_dragging = False
-            elif event.type == pygame.MOUSEMOTION and self.mouse_dragging:
-                dx, dy = event.pos[0] - self.last_mouse_pos[0], event.pos[1] - self.last_mouse_pos[1]
-                self.camera_rot[1] += dx * self.rotation_speed
-                self.camera_rot[0] += dy * self.rotation_speed
-                self.last_mouse_pos = event.pos
+                         logging.warning(f"Wavelength unit key '{unit_key}' not found in FITS header. Defaulting to 'um'.")
+                else:
+                     logging.warning("Could not find original FITS wavelength column name to check TUNIT. Defaulting to 'um'.")
+
+            except Exception as e:
+                logging.warning(f"Could not parse wavelength unit from FITS header (TUNIT): {e}. Defaulting to 'um'.")
+            
+            if unit:
+                unit = unit.lower().replace('micron', 'um').strip()
+            else: 
+                unit = 'um'
+
+            out_df['wavelength_unit'] = unit
+            out_df['instrument'] = obs_table[0]['instrument_name']
+
+            original_rows = len(out_df)
+            out_df = out_df[out_df['wavelength'] > 0].dropna(subset=['wavelength'])
+            filtered_rows = len(out_df)
+            if original_rows != filtered_rows:
+                 logging.warning(f"Filtered out {original_rows - filtered_rows} rows with invalid wavelength values.")
+
+            if out_df.empty:
+                 logging.error("DataFrame is empty after filtering invalid wavelengths.")
+                 return pd.DataFrame()
+
+            logging.info(f"Successfully processed FITS data for {planet_name}. Final DataFrame shape: {out_df.shape}")
+            return out_df
+
+        except FileNotFoundError:
+             logging.error(f"Downloaded FITS file not found. Check download process.")
+             return pd.DataFrame()
+        except Exception as e:
+            logging.error(f"MAST query or FITS processing failed for {planet_name}: {str(e)}", exc_info=True)
+            shutil.rmtree('mastDownload', ignore_errors=True)
+            return pd.DataFrame()
         
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_w]: self.camera_pos[1] -= self.move_speed
-        if keys[pygame.K_s]: self.camera_pos[1] += self.move_speed
-        if keys[pygame.K_a]: self.camera_pos[0] += self.move_speed
-        if keys[pygame.K_d]: self.camera_pos[0] -= self.move_speed
-        return True
+    def setup_ui(self):
+        """Initialize main UI components"""
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
 
-    def select_star_at_pos(self, mouse_pos):
-        viewport=glGetIntegerv(GL_VIEWPORT); modelview=glGetDoublev(GL_MODELVIEW_MATRIX); projection=glGetDoublev(GL_PROJECTION_MATRIX)
-        winX,winY=float(mouse_pos[0]),float(viewport[3]-mouse_pos[1])
-        p_near=gluUnProject(winX,winY,0.0,modelview,projection,viewport); p_far=gluUnProject(winX,winY,1.0,modelview,projection,viewport)
-        ray_origin,ray_dir=np.array(p_near),np.array(p_far)-np.array(p_near); ray_dir/=np.linalg.norm(ray_dir)
-        distances_to_ray = np.linalg.norm(np.cross(self.star_positions-ray_origin,ray_dir),axis=1)
-        min_dist_idx = np.argmin(distances_to_ray)
-        if distances_to_ray[min_dist_idx] < SELECTION_THRESHOLD: self.info_panel.set_selected_star(self.star_data.iloc[min_dist_idx], self.exoplanet_data)
-        else: self.info_panel.clear_selection()
+        self.create_orbit_tab()
+        self.create_spectrum_tab()
+        self.create_hr_tab()
+        self.create_research_tab()
+        self.create_controls()
 
-    def draw_hud(self):
-        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0,SCREEN_WIDTH,0,SCREEN_HEIGHT)
-        glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity(); glDisable(GL_DEPTH_TEST)
-        self.info_panel.draw(pygame.display.get_surface())
-        glEnable(GL_DEPTH_TEST); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW); glPopMatrix()
+    def create_controls(self):
+        """Create control panel"""
+        control_frame = ttk.Frame(self.root)
+        control_frame.pack(fill='x', padx=10, pady=10)
 
-    def run(self):
-        running=True
-        while running:
-            running = self.handle_input()
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-            glLoadIdentity(); glTranslatef(*self.camera_pos); glRotatef(self.camera_rot[0],1,0,0); glRotatef(self.camera_rot[1],0,1,0)
-            self.draw_scene(); self.draw_hud()
-            pygame.display.flip(); pygame.time.wait(10)
-        pygame.quit()
+        ttk.Label(control_frame, text="Host Star:").grid(row=0, column=0, padx=5)
+        self.star_var = tk.StringVar()
+        self.star_combo = ttk.Combobox(control_frame, textvariable=self.star_var,
+                                      values=self.host_stars, state='readonly',
+                                      width=30)
+        self.star_combo.grid(row=0, column=1, padx=5)
+        self.star_combo.bind("<<ComboboxSelected>>", self.update_planets)
 
+        ttk.Label(control_frame, text="Planet:").grid(row=0, column=2, padx=5)
+        self.planet_var = tk.StringVar()
+        self.planet_combo = ttk.Combobox(control_frame, textvariable=self.planet_var,
+                                       state='readonly', width=30)
+        self.planet_combo.grid(row=0, column=3, padx=5)
+
+        ttk.Button(control_frame, text="Animate Orbit",
+                   command=self.animate_orbit).grid(row=0, column=4, padx=5)
+        ttk.Button(control_frame, text="Show Atmosphere",
+                   command=self.show_atmosphere).grid(row=0, column=5, padx=5)
+        
+        # Removed "Refresh Data" button as it's no longer needed for main data
+        # ttk.Button(control_frame, text="Refresh Data",
+        #            command=self.refresh_data).grid(row=0, column=6, padx=5)
+
+    def create_orbit_tab(self):
+        """Configure orbit animation tab"""
+        self.orbit_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.orbit_tab, text="Orbit Viewer")
+
+        self.orbit_info = tk.Text(self.orbit_tab, height=8, wrap=tk.WORD, state='disabled')
+        self.orbit_info.pack(fill='x', padx=10, pady=(10, 0))
+
+        self.fig_orbit = Figure(figsize=(8, 6), facecolor='#0a0a2a')
+        self.ax_orbit = self.fig_orbit.add_subplot(111)
+        self.ax_orbit.set_facecolor("black")
+        self.canvas_orbit = FigureCanvasTkAgg(self.fig_orbit, master=self.orbit_tab)
+        self.canvas_orbit.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
+        self.ax_orbit.text(0.5, 0.5, "Select a planet and click 'Animate Orbit'", color='white',
+                           ha='center', va='center', transform=self.ax_orbit.transAxes)
+
+
+    def create_spectrum_tab(self):
+        """Configure black body spectrum tab"""
+        self.spectrum_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.spectrum_tab, text="Stellar Spectrum")
+
+        self.fig_spectrum = Figure(figsize=(8, 6))
+        self.ax_spectrum = self.fig_spectrum.add_subplot(111)
+        self.canvas_spectrum = FigureCanvasTkAgg(self.fig_spectrum, master=self.spectrum_tab)
+        self.canvas_spectrum.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
+        self.ax_spectrum.text(0.5, 0.5, "Select a star to view its spectrum",
+                                 ha='center', va='center', transform=self.ax_spectrum.transAxes)
+
+
+    def create_hr_tab(self):
+        """Configure HR diagram tab"""
+        self.hr_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.hr_tab, text="HR Diagram")
+
+        self.fig_hr = Figure(figsize=(8, 6))
+        self.ax_hr = self.fig_hr.add_subplot(111)
+        self.canvas_hr = FigureCanvasTkAgg(self.fig_hr, master=self.hr_tab)
+        self.canvas_hr.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
+        self.ax_hr.text(0.5, 0.5, "HR Diagram will load with data",
+                          ha='center', va='center', transform=self.ax_hr.transAxes)
+
+
+    def create_research_tab(self):
+        """Configure research tab with data table"""
+        self.research_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.research_tab, text="Research")
+
+        search_frame = ttk.Frame(self.research_tab)
+        search_frame.pack(fill='x', padx=10, pady=10)
+
+        ttk.Label(search_frame, text="Search:").pack(side='left', padx=5)
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.pack(side='left', fill='x', expand=True, padx=5)
+        search_entry.bind("<KeyRelease>", self.filter_research_table)
+        ttk.Button(search_frame, text="Clear", command=lambda: [self.search_var.set(""), self.filter_research_table()]).pack(side='left', padx=5)
+
+        tree_frame = ttk.Frame(self.research_tab)
+        tree_frame.pack(expand=True, fill='both', padx=10, pady=(0, 10))
+
+        columns = ("Planet", "Star", "Period (days)", "Semi-Major (AU)", "Radius (Jup)", "Mass (Jup)", "Temp (K)", "Distance (pc)")
+        self.research_tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+
+        col_widths = {"Planet": 150, "Star": 150, "Period (days)": 100, "Semi-Major (AU)": 100, "Radius (Jup)": 100, "Mass (Jup)": 100, "Temp (K)": 100, "Distance (pc)": 100}
+        for col in columns:
+            self.research_tree.heading(col, text=col, command=lambda c=col: self.sort_research_table(c, False))
+            self.research_tree.column(col, width=col_widths.get(col, 120), anchor='center')
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.research_tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.research_tree.xview)
+        self.research_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        self.research_tree.pack(side="left", expand=True, fill='both')
+
+        if not self.planetary_data.empty:
+            self.populate_research_table(self.planetary_data)
+        else:
+             self.research_tree.insert("", "end", values=("No data loaded",)*len(columns))
+
+
+    def populate_research_table(self, data_frame):
+        """Fill research table with data from a DataFrame"""
+        for item in self.research_tree.get_children():
+            self.research_tree.delete(item)
+
+        for _, row in data_frame.iterrows():
+            values = (
+                row.get('pl_name', "N/A"),
+                row.get('hostname', "N/A"),
+                f"{row.get('pl_orbper', np.nan):.3f}" if pd.notna(row.get('pl_orbper')) else "N/A",
+                f"{row.get('pl_orbsmax', np.nan):.3f}" if pd.notna(row.get('pl_orbsmax')) else "N/A",
+                f"{row.get('pl_radj', np.nan):.3f}" if pd.notna(row.get('pl_radj')) else "N/A",
+                f"{row.get('pl_bmassj', np.nan):.3f}" if pd.notna(row.get('pl_bmassj')) else "N/A",
+                f"{row.get('teff_gspphot', np.nan):.0f}" if pd.notna(row.get('teff_gspphot')) else "N/A", # Use new column name
+                f"{row.get('sy_dist', np.nan):.1f}" if pd.notna(row.get('sy_dist')) else "N/A"
+            )
+            self.research_tree.insert("", "end", values=values)
+
+    def filter_research_table(self, event=None):
+        """Filter research table based on search query in Planet or Star column"""
+        query = self.search_var.get().lower().strip()
+
+        if not query:
+            self.populate_research_table(self.planetary_data)
+            return
+
+        filtered_df = self.planetary_data[
+            self.planetary_data['pl_name'].str.lower().str.contains(query, na=False) |
+            self.planetary_data['hostname'].str.lower().str.contains(query, na=False)
+        ]
+
+        self.populate_research_table(filtered_df)
+
+    def sort_research_table(self, col, reverse):
+        """Sort research table by column"""
+        data = [(self.research_tree.set(child, col), child) for child in self.research_tree.get_children('')]
+        
+        def sort_key(item):
+            value = item[0]
+            if value == "N/A":
+                return -np.inf if reverse else np.inf
+            try:
+                return float(value)
+            except ValueError:
+                return value
+
+        data.sort(key=sort_key, reverse=reverse)
+
+        for index, (val, child) in enumerate(data):
+            self.research_tree.move(child, '', index)
+
+        self.research_tree.heading(col, command=lambda c=col: self.sort_research_table(c, not reverse))
+
+
+    def update_planets(self, event=None):
+        """Update planet list when star changes and update plots"""
+        star = self.star_var.get()
+        logging.info(f"Star selected: {star}")
+        if self.planetary_data.empty or not star:
+            self.planet_combo['values'] = []
+            self.planet_var.set("")
+            logging.warning("Planetary data is empty or no star selected, cannot update planets.")
+            return
+
+        planets = self.planetary_data[self.planetary_data['hostname'] == star]['pl_name'].tolist()
+        self.planet_combo['values'] = planets
+        if planets:
+            self.planet_var.set(planets[0])
+            logging.info(f"Updated planet list for {star}. Planets: {planets}")
+        else:
+             self.planet_var.set("")
+             logging.warning(f"No planets found for star: {star}")
+
+        self.plot_black_body_spectrum()
+        self.plot_hr_diagram()
+        if self.ani:
+            self.ani.event_source.stop()
+            self.ani = None
+            self.ax_orbit.clear()
+            self.ax_orbit.text(0.5, 0.5, "Select a planet and click 'Animate Orbit'", color='white',
+                                 ha='center', va='center', transform=self.ax_orbit.transAxes)
+            self.canvas_orbit.draw_idle()
+            self.orbit_info.config(state='normal')
+            self.orbit_info.delete(1.0, tk.END)
+            self.orbit_info.config(state='disabled')
+
+
+    def plot_black_body_spectrum(self):
+        """Plot star's black body spectrum using local temperature data"""
+        self.ax_spectrum.clear()
+        star = self.star_var.get()
+
+        if not star or self.planetary_data.empty:
+            self.ax_spectrum.text(0.5, 0.5, "Select a star", ha='center', va='center', fontsize=12)
+            self.canvas_spectrum.draw_idle()
+            return
+
+        star_data_rows = self.planetary_data[self.planetary_data['hostname'] == star]
+        if star_data_rows.empty:
+             logging.warning(f"No data found for star {star} in main dataframe.")
+             self.ax_spectrum.text(0.5, 0.5, f"Data not found for {star}", ha='center', va='center', fontsize=12)
+             self.canvas_spectrum.draw_idle()
+             return
+
+        star_data = star_data_rows.iloc[0]
+        T = star_data.get('teff_gspphot') # Use new column name
+
+        if pd.isna(T):
+            self.ax_spectrum.text(0.5, 0.5, f"Stellar Temperature (st_teff)\ndata unavailable for {star}",
+                                 ha='center', va='center', fontsize=12)
+            self.canvas_spectrum.draw_idle()
+            logging.warning(f"Temperature data unavailable for star: {star}")
+            return
+
+        try:
+            T = float(T)
+            wavelengths_nm = np.linspace(100, 3000, 500)
+            wavelengths_m = wavelengths_nm * 1e-9
+
+            intensity = (2 * H_PLANCK * C_LIGHT**2 / wavelengths_m**5) / \
+                         (np.exp(H_PLANCK * C_LIGHT / (wavelengths_m * K_BOLTZMANN * T)) - 1)
+
+            normalized_intensity = intensity / np.max(intensity) if np.max(intensity) > 0 else intensity
+
+            self.ax_spectrum.plot(wavelengths_nm, normalized_intensity, color='orange', linewidth=2)
+            self.ax_spectrum.set_title(f"Approx. Black Body Spectrum: {star} (T={T:.0f} K)", fontsize=12)
+            self.ax_spectrum.set_xlabel("Wavelength (nm)", fontsize=10)
+            self.ax_spectrum.set_ylabel("Normalized Intensity", fontsize=10)
+            self.ax_spectrum.grid(True, linestyle=':', alpha=0.6)
+            self.ax_spectrum.set_ylim(0, 1.1)
+            self.ax_spectrum.set_xlim(min(wavelengths_nm), max(wavelengths_nm))
+            logging.info(f"Plotted black body spectrum for {star} (T={T:.0f} K)")
+
+        except Exception as e:
+             logging.error(f"Error plotting black body spectrum for {star}: {e}", exc_info=True)
+             self.ax_spectrum.text(0.5, 0.5, f"Error plotting spectrum\nfor {star}", ha='center', va='center', fontsize=12)
+
+        self.canvas_spectrum.draw_idle()
+
+
+    def plot_hr_diagram(self):
+        """Plot HR diagram using local stellar data"""
+        self.ax_hr.clear()
+
+        if self.planetary_data.empty:
+            self.ax_hr.text(0.5, 0.5, "Planetary data not loaded",
+                           ha='center', va='center', fontsize=12)
+            self.canvas_hr.draw_idle()
+            return
+
+        # Use new column names
+        valid_data = self.planetary_data.dropna(subset=['teff_gspphot', 'lum_gspphot']).copy()
+        valid_data['teff_gspphot'] = pd.to_numeric(valid_data['teff_gspphot'], errors='coerce')
+        valid_data['lum_gspphot'] = pd.to_numeric(valid_data['lum_gspphot'], errors='coerce')
+        valid_data = valid_data.dropna(subset=['teff_gspphot', 'lum_gspphot'])
+
+
+        if valid_data.empty:
+            self.ax_hr.text(0.5, 0.5, "Insufficient valid stellar data\n(Temp & Luminosity) for HR Diagram",
+                           ha='center', va='center', fontsize=12)
+            self.canvas_hr.draw_idle()
+            logging.warning("Insufficient valid data for HR diagram.")
+            return
+
+        self.ax_hr.scatter(
+            valid_data['teff_gspphot'],
+            valid_data['lum_gspphot'], # Use direct luminosity
+            alpha=0.4,
+            s=20,
+            label=f'All Host Stars ({len(valid_data)})',
+            edgecolors='grey',
+            linewidths=0.5
+        )
+
+        selected_star_name = self.star_var.get()
+        if selected_star_name:
+            star_data = valid_data[valid_data['hostname'] == selected_star_name]
+            if not star_data.empty:
+                star = star_data.iloc[0]
+                self.ax_hr.scatter(
+                    star['teff_gspphot'],
+                    star['lum_gspphot'], # Use direct luminosity
+                    color='red',
+                    s=100,
+                    edgecolor='black',
+                    linewidth=1,
+                    label=f'Selected: {selected_star_name}',
+                    zorder=5
+                )
+                logging.info(f"Highlighted {selected_star_name} on HR diagram.")
+            else:
+                 logging.warning(f"Selected star {selected_star_name} not found in valid HR data.")
+
+
+        self.ax_hr.set_yscale('log')
+        self.ax_hr.set_xscale('log')
+        self.ax_hr.invert_xaxis()
+        self.ax_hr.set_title("Hertzsprung-Russell Diagram (Exoplanet Host Stars)", fontsize=12)
+        self.ax_hr.set_xlabel("Effective Temperature (K)", fontsize=10)
+        self.ax_hr.set_ylabel("Luminosity (Relative to Sun)", fontsize=10)
+        if len(self.ax_hr.get_legend_handles_labels()[1]) > 0:
+            self.ax_hr.legend(fontsize=9)
+        self.ax_hr.grid(True, which="both", ls=":", alpha=0.5)
+        logging.info("Plotted HR diagram.")
+        self.canvas_hr.draw_idle()
+
+
+    def animate_orbit(self):
+        """Animate planet orbit using local data"""
+        planet_name = self.planet_var.get()
+        if not planet_name:
+            messagebox.showwarning("No Planet Selected", "Please select a planet from the dropdown first.")
+            return
+        if self.planetary_data.empty:
+            messagebox.showerror("Data Error", "Planetary data not loaded.")
+            return
+
+        if self.ani:
+            try:
+                self.ani.event_source.stop()
+                logging.info("Stopped previous animation.")
+            except AttributeError:
+                pass
+            self.ani = None 
+
+        planet_data_rows = self.planetary_data[self.planetary_data['pl_name'] == planet_name]
+        if planet_data_rows.empty:
+            messagebox.showerror("Data Error", f"No data found for the selected planet: {planet_name}")
+            logging.error(f"No data found for planet: {planet_name}")
+            return
+
+        p = planet_data_rows.iloc[0]
+
+        try:
+            a = pd.to_numeric(p.get('pl_orbsmax'), errors='coerce')
+            period_days = pd.to_numeric(p.get('pl_orbper'), errors='coerce')
+            ecc = pd.to_numeric(p.get('pl_orbeccen'), errors='coerce')
+
+            if pd.isna(a) or pd.isna(period_days):
+                messagebox.showerror("Orbit Data Error", f"Missing or invalid Semi-Major Axis (a={a}) or Orbital Period (P={period_days}) for {planet_name}.")
+                logging.error(f"Missing/invalid orbit params for {planet_name}: a={a}, P={period_days}")
+                return
+            if pd.isna(ecc):
+                ecc = 0.0
+                logging.warning(f"Eccentricity missing for {planet_name}, assuming circular orbit (ecc=0.0).")
+
+            a = float(a)
+            period_days = float(period_days)
+            ecc = float(ecc)
+            b = a * np.sqrt(max(0, 1 - ecc**2))
+            focus_offset = a * ecc
+
+            theta_ellipse = np.linspace(0, 2 * np.pi, 200)
+            x_ellipse_centered = a * np.cos(theta_ellipse)
+            y_ellipse_centered = b * np.sin(theta_ellipse)
+            x_orbit_path = x_ellipse_centered - focus_offset
+            y_orbit_path = y_ellipse_centered
+
+            self.orbit_info.config(state='normal')
+            self.orbit_info.delete(1.0, tk.END)
+            info_text = (
+                f"Planet: {planet_name}\n"
+                f"Host Star: {p.get('hostname', 'N/A')}\n"
+                f"Orbital Period: {period_days:.3f} days\n"
+                f"Semi-Major Axis: {a:.3f} AU\n"
+                f"Eccentricity: {ecc:.3f}\n"
+                f"Discovery Year: {int(p['disc_year']) if pd.notna(p.get('disc_year')) else 'N/A'}"
+            )
+            self.orbit_info.insert(tk.END, info_text)
+            self.orbit_info.config(state='disabled')
+            logging.info(f"Displaying orbit info for {planet_name}")
+
+            self.ax_orbit.clear()
+            self.ax_orbit.set_facecolor("black")
+            self.ax_orbit.plot(x_orbit_path, y_orbit_path, 'w--', alpha=0.5, linewidth=1, label='Orbit Path')
+            self.ax_orbit.plot(0, 0, 'o', color='gold', markersize=15, label=f'Star ({p.get("hostname", "")})')
+
+            
+            max_extent = a * (1 + ecc) + focus_offset
+            plot_limit = max_extent * 1.2
+            self.ax_orbit.set_xlim(-plot_limit, plot_limit)
+            self.ax_orbit.set_ylim(-plot_limit, plot_limit)
+            
+            self.ax_orbit.set_aspect('equal', adjustable='box')
+            self.ax_orbit.set_title(f"Orbit of {planet_name} (View from Above)", fontsize=12, color='white')
+            self.ax_orbit.grid(True, linestyle=':', color='gray', alpha=0.4)
+            if self.ax_orbit.get_legend_handles_labels()[1]:
+                 legend = self.ax_orbit.legend(loc='upper right', fontsize=8)
+                 plt.setp(legend.get_texts(), color='white')
+
+            self.planet_dot, = self.ax_orbit.plot([], [], 'o', color='deepskyblue', markersize=7, label='Planet')
+            self.dist_line, = self.ax_orbit.plot([], [], '--', color='red', alpha=0.6, linewidth=1)
+
+            def init_anim():
+                self.planet_dot.set_data([], [])
+                self.dist_line.set_data([], [])
+                return self.planet_dot, self.dist_line
+
+            num_frames = 200
+            def update_anim(frame):
+                M = frame * (2 * np.pi / num_frames)
+                try:
+                    E = newton(lambda E_guess: E_guess - ecc * np.sin(E_guess) - M, M, tol=1e-6, maxiter=50)
+                except RuntimeError:
+                    E = M
+                    if frame == 0: logging.warning(f"Newton solver failed for Kepler's Eq (ecc={ecc:.3f}), using E approx M.")
+
+                x_planet_centered = a * np.cos(E)
+                y_planet_centered = b * np.sin(E)
+                x_planet = x_planet_centered - focus_offset
+                y_planet = y_planet_centered
+
+                self.planet_dot.set_data([x_planet], [y_planet])
+                self.dist_line.set_data([0, x_planet], [0, y_planet])
+                return self.planet_dot, self.dist_line
+
+            self.ani = animation.FuncAnimation(
+                self.fig_orbit,
+                update_anim,
+                init_func=init_anim,
+                frames=num_frames,
+                interval=max(20, int(period_days * 1000 / num_frames)),
+                blit=False,
+                repeat=True
+            )
+
+            self.canvas_orbit.draw_idle()
+            logging.info(f"Started orbit animation for {planet_name}")
+
+        except (ValueError, TypeError, KeyError) as e:
+            messagebox.showerror("Animation Error", f"Could not animate orbit due to invalid data for {planet_name}:\n{str(e)}")
+            logging.error(f"Invalid data for orbit animation {planet_name}: {e}", exc_info=True)
+            self.ax_orbit.clear()
+            self.ax_orbit.text(0.5, 0.5, f"Error animating orbit\nfor {planet_name}", color='white',
+                                 ha='center', va='center', transform=self.ax_orbit.transAxes)
+            self.canvas_orbit.draw_idle()
+            self.orbit_info.config(state='normal')
+            self.orbit_info.delete(1.0, tk.END)
+            self.orbit_info.config(state='disabled')
+
+
+    def show_atmosphere(self):
+        """Display atmospheric composition popup (Transmission Spectrum + Molecular Abundance)"""
+        planet_name = self.planet_var.get()
+        if not planet_name:
+            messagebox.showwarning("No Planet Selected", "Please select a planet first.")
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title(f"Atmospheric Composition - {planet_name}")
+        popup.geometry("1000x800") 
+
+        control_frame = ttk.Frame(popup, padding="10")
+        control_frame.pack(fill='x', side='top')
+
+        sig_frame = ttk.LabelFrame(control_frame, text="Show Atmospheric Signatures (Lines are approximate)")
+        sig_frame.pack(fill='x', padx=5, pady=5)
+ 
+        self.element_vars = {} 
+        num_cols = 6 
+        col_count = 0
+        row_count = 0
+        for element in ATMOSPHERIC_SIGNATURES.keys():
+            var = tk.BooleanVar(value=False)
+            chk = ttk.Checkbutton(sig_frame, text=element, variable=var, style="Toolbutton")
+            chk.grid(row=row_count, column=col_count, padx=5, pady=2, sticky='w')
+            self.element_vars[element] = var
+            
+            col_count += 1
+            if col_count >= num_cols:
+                col_count = 0
+                row_count += 1
+        
+        plot_frame = ttk.Frame(popup)
+        plot_frame.pack(expand=True, fill='both')
+
+        notebook = ttk.Notebook(plot_frame)
+        notebook.pack(expand=True, fill='both', padx=10, pady=(0, 10))
+
+        spec_frame = ttk.Frame(notebook)
+        mol_frame = ttk.Frame(notebook)
+        notebook.add(spec_frame, text="Transmission Spectrum")
+        notebook.add(mol_frame, text="Molecular Abundance")
+        
+        status_var = tk.StringVar(value="Loading data...")
+        status_label = ttk.Label(control_frame, textvariable=status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_label.pack(side='left', fill='x', expand=True, padx=(10, 0))
+
+        def update_plots_in_popup():
+            """Clear and redraw plot tabs based on checkbox states"""
+            status_var.set(f"Fetching/Plotting for {planet_name}...")
+            popup.update_idletasks() 
+            for widget in spec_frame.winfo_children(): widget.destroy()
+            for widget in mol_frame.winfo_children(): widget.destroy()
+                 
+            self.plot_transmission_spectrum(spec_frame, planet_name, self.element_vars) 
+            self.plot_molecular_abundance(mol_frame, planet_name)
+            
+            status_var.set(f"Plots updated for {planet_name}.")
+
+        update_button = ttk.Button(control_frame, text="Update Plot", command=update_plots_in_popup)
+        update_button.pack(side='right', padx=10, pady=5)
+
+        popup.after(100, update_plots_in_popup)
+
+
+    def plot_transmission_spectrum(self, parent, planet_name, element_vars):
+        """Plot transmission spectrum from MAST data in the specified parent widget."""
+        logging.info(f"Plotting transmission spectrum for {planet_name}...")
+        fig = Figure(figsize=(8, 5), dpi=100)
+        ax = fig.add_subplot(111)
+
+        canvas_placeholder = FigureCanvasTkAgg(fig, master=parent)
+        canvas_placeholder.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
+        ax.text(0.5, 0.5, f"Fetching spectrum data for\n{planet_name} from MAST...\n(This can take a minute)",
+               ha='center', va='center', fontsize=10)
+        canvas_placeholder.draw()
+        parent.update_idletasks()
+
+        data = self.fetch_spectroscopy_data(planet_name)
+
+        for widget in parent.winfo_children(): widget.destroy()
+        ax.clear()
+
+        if data.empty or 'wavelength' not in data.columns or 'flux' not in data.columns:
+            logging.warning(f"No valid spectroscopy data to plot for {planet_name}.")
+            ax.text(0.5, 0.5, f"No spectroscopy data available\nor failed to process FITS file for\n{planet_name}",
+                   ha='center', va='center', fontsize=12)
+        else:
+            logging.info(f"Plotting {len(data)} data points for {planet_name}.")
+            instrument = data['instrument'].iloc[0] if 'instrument' in data.columns else 'Unknown Instrument'
+            has_errors = 'flux_err' in data.columns and data['flux_err'].notna().any()
+
+            if has_errors:
+                valid_error_data = data[pd.notna(data['flux_err']) & (data['flux_err'] > 0)].copy()
+                if not valid_error_data.empty:
+                    ax.errorbar(
+                        valid_error_data['wavelength'],
+                        valid_error_data['flux'],
+                        yerr=valid_error_data['flux_err'],
+                        fmt='o',
+                        label=f"{instrument} (with errors)",
+                        capsize=3,
+                        alpha=0.7,
+                        markersize=3,
+                        ecolor='gray',
+                        elinewidth=1
+                    )
+                    no_valid_error_data = data[~(pd.notna(data['flux_err']) & (data['flux_err'] > 0))].copy()
+                    if not no_valid_error_data.empty:
+                         ax.plot(
+                             no_valid_error_data['wavelength'],
+                             no_valid_error_data['flux'],
+                             'o',
+                             label=f"{instrument} (no valid errors)",
+                             alpha=0.6,
+                             markersize=3
+                         )
+                else:
+                     has_errors = False
+
+            if not has_errors:
+                 ax.plot(
+                     data['wavelength'],
+                     data['flux'],
+                     'o',
+                     label=f"{instrument}",
+                     alpha=0.7,
+                     markersize=3
+                 )
+            
+            target_unit = data['wavelength_unit'].iloc[0].lower() if 'wavelength_unit' in data.columns else 'um'
+            plot_xmin, plot_xmax = ax.get_xlim()
+            plotted_labels = set() 
+            logging.info(f"Wavelength unit: {target_unit}, Plot X-limits: ({plot_xmin:.3f}, {plot_xmax:.3f})")
+
+            if element_vars:
+                for element, tk_var in element_vars.items():
+                    if tk_var.get():
+                        signature = ATMOSPHERIC_SIGNATURES[element] 
+                        logging.debug(f"Checkbox '{element}' is checked. Plotting lines.")
+                        
+                        for wl_um in signature['wavelengths']:
+                            converted_wl = wl_um
+                            if 'nm' in target_unit or 'nanometer' in target_unit:
+                                converted_wl *= 1000
+                            elif 'angstrom' in target_unit:
+                                converted_wl *= 10000
+                            elif 'm' == target_unit:
+                                converted_wl *= 1e-6
+
+                            if plot_xmin <= converted_wl <= plot_xmax:
+                                label = element if element not in plotted_labels else None
+                                ax.axvline(
+                                    x=converted_wl,
+                                    color=signature['color'],
+                                    linestyle=':',
+                                    alpha=0.9,
+                                    label=label,
+                                    linewidth=1.5
+                                )
+                                plotted_labels.add(element)
+                                logging.debug(f"Plotted '{element}' line at {converted_wl:.3f} {target_unit}")
+                            else:
+                                 logging.debug(f"Skipped '{element}' line at {wl_um} µm ({converted_wl:.3f} {target_unit}) - outside plot range.")
+            else:
+                 logging.warning("element_vars not passed correctly to plot_transmission_spectrum.")
+
+
+            ax.set_title(f"Transmission Spectrum: {planet_name}", fontsize=12)
+            ax.set_xlabel(f"Wavelength ({target_unit})", fontsize=10)
+            ax.set_ylabel("Relative Flux / Transit Depth", fontsize=10) 
+            
+            handles, labels = ax.get_legend_handles_labels()
+            if labels:
+                 ax.legend(handles, labels, fontsize=8, loc='best') 
+
+            ax.grid(True, linestyle=':', alpha=0.5)
+            logging.info(f"Finished plotting spectrum for {planet_name}.")
+
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
+        
+    def plot_molecular_abundance(self, parent, planet_name):
+        """Plot molecular abundance bar chart from NASA Archive data."""
+        logging.info(f"Plotting molecular abundance for {planet_name}...")
+        fig = Figure(figsize=(8, 5), dpi=100)
+        ax = fig.add_subplot(111)
+
+        # Fetch data (this uses the NEW local function)
+        data = self.fetch_atmospheric_data(planet_name)
+
+        if data.empty or 'molecule' not in data.columns or 'abundance' not in data.columns:
+            logging.warning(f"No valid molecular abundance data to plot for {planet_name}.")
+            ax.text(0.5, 0.5, f"No *detected* molecular abundance data found\n for {planet_name} in local CSV",
+                   ha='center', va='center', fontsize=12)
+        else:
+             data['abundance'] = pd.to_numeric(data['abundance'], errors='coerce')
+             plot_data = data.dropna(subset=['abundance', 'molecule']).copy()
+
+             if plot_data.empty:
+                  ax.text(0.5, 0.5, f"Molecular abundance data for\n{planet_name} is invalid.",
+                          ha='center', va='center', fontsize=12)
+             else:
+                 molecules = plot_data['molecule'].tolist()
+                 abundances = plot_data['abundance'].tolist()
+
+                 bars = ax.bar(molecules, abundances, color='skyblue')
+                 ax.set_title(f"Detected Molecular Abundance: {planet_name}", fontsize=12)
+                 ax.set_ylabel("Detection (Placeholder)", fontsize=10) # Updated label
+                 ax.tick_params(axis='x', rotation=45, labelsize=9)
+                 ax.grid(True, axis='y', linestyle=':', alpha=0.6)
+                 
+                 # Set y-axis to just show the bars, since abundance is just '1'
+                 ax.set_yticks([]) 
+                 
+                 logging.info(f"Plotted molecular abundance for {planet_name}.")
+
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
+
+    def refresh_data(self):
+        """This function is depreciated as we now load from a local file."""
+        messagebox.showinfo("Local Data", f"The application is running on the local data file '{DATA_FILE}'.\n\nTo refresh the data, please download a new file from the NASA Exoplanet Archive and replace your existing CSV.")
+        logging.info("Refresh button clicked, but app is in local mode. No action taken.")
+
+
+# Main execution block
 if __name__ == "__main__":
-    app = StellarNavigator3D()
-    app.run()
+    root = tk.Tk()
+    style = ttk.Style()
+    available_themes = style.theme_names()
+    logging.info(f"Available themes: {available_themes}")
+    if 'clam' in available_themes:
+         style.theme_use('clam')
+         logging.info("Using 'clam' theme.")
+    elif 'vista' in available_themes: # Good default on Windows
+        style.theme_use('vista')
+        logging.info("Using 'vista' theme.")
 
+    app = ExoplanetAnalyzer(root)
+    root.mainloop()
