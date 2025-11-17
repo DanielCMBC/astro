@@ -14,35 +14,37 @@ import os
 import time
 import shutil
 import json
+import sys # <-- IMPORT SYS TO FIX THE NameError
 from tenacity import retry, stop_after_attempt, wait_exponential
 from astroquery.mast import Observations
 from astropy.io import fits
 
-
+# --- Scientific Constants ---
 H_PLANCK = 6.626e-34
 C_LIGHT = 3e8
 K_BOLTZMANN = 1.381e-23
 SOLAR_TEMP = 5778
 
-
-# These are the files you just uploaded.
-PLANET_DATA_FILE = "exoplanets_with_atmo_fields.csv"
+# --- LOCAL DATA FILES ---
+PLANET_DATA_FILE = "exoplanet_data_full.csv"
 ATMOSPHERE_JSON_FILE = "atmospheric_signatures.json"
 MOLECULE_DATA_FILE = "planet_molecules.csv"
 
-
+# --- Load Atmospheric Signatures from JSON ---
 try:
     with open(ATMOSPHERE_JSON_FILE, 'r') as f:
         ATMOSPHERIC_SIGNATURES = json.load(f)
     logging.info(f"Successfully loaded {len(ATMOSPHERIC_SIGNATURES)} signatures from {ATMOSPHERE_JSON_FILE}")
 except Exception as e:
     logging.error(f"FATAL ERROR: Could not read {ATMOSPHERE_JSON_FILE}. {e}")
+    # Need to create a temp root to show messagebox before main app runs
+    root = tk.Tk()
+    root.withdraw() # Hide the root window
     messagebox.showerror("File Error", f"Could not read {ATMOSPHERE_JSON_FILE}. App will exit.")
-    ATMOSPHERIC_SIGNATURES = {} # Fallback
-    exit()
+    sys.exit() # <-- CORRECTED FROM exit() TO sys.exit()
 
 
-
+# --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -57,7 +59,6 @@ class ExoplanetAnalyzer:
         self.root.minsize(1000, 700)
         self.ani = None
         
-     
         self.planetary_data, self.molecule_detections = self.load_local_data()
 
         if not self.planetary_data.empty:
@@ -76,24 +77,23 @@ class ExoplanetAnalyzer:
         """Loads all data from the local CSV files."""
         logging.info(f"Attempting to load data from local files...")
         
-        if not os.path.exists(PLANET_DATA_FILE) or not os.path.exists(MOLECULE_DATA_FILE):
-            error_msg = f"FATAL ERROR: Data file not found."
+        required_files = [PLANET_DATA_FILE, MOLECULE_DATA_FILE] # JSON already checked
+        missing_files = [f for f in required_files if not os.path.exists(f)]
+
+        if missing_files:
+            error_msg = f"FATAL ERROR: Missing data file(s):\n{', '.join(missing_files)}"
             logging.error(error_msg)
-            messagebox.showerror("File Not Found", f"Could not find '{PLANET_DATA_FILE}' or '{MOLECULE_DATA_FILE}'.\nPlease make sure they are in the same folder as the script.")
+            messagebox.showerror("File Not Found", f"{error_msg}\nPlease make sure all files are in the same folder as the script.")
             self.root.destroy()
             return pd.DataFrame(), pd.DataFrame()
         
         try:
-            # Load the main planet "phonebook"
             planets_df = pd.read_csv(PLANET_DATA_FILE, comment='#')
             logging.info(f"Successfully loaded {len(planets_df)} records from {PLANET_DATA_FILE}.")
 
-            # Load the molecule detection "join table"
             molecules_df = pd.read_csv(MOLECULE_DATA_FILE, comment='#')
             logging.info(f"Successfully loaded {len(molecules_df)} records from {MOLECULE_DATA_FILE}.")
 
-       
-            # Rename columns from the CSV to match what the script expects
             column_rename_map = {
                 'st_teff': 'teff_gspphot',
                 'st_lum': 'lum_gspphot',
@@ -104,14 +104,13 @@ class ExoplanetAnalyzer:
             cols_to_rename = {k: v for k, v in column_rename_map.items() if k in planets_df.columns}
             planets_df = planets_df.rename(columns=cols_to_rename)
 
-            # Ensure all expected columns exist, adding NaNs if they don't
             expected_cols = ['pl_name', 'hostname', 'pl_orbper', 'pl_orbsmax', 'pl_radj',
                              'pl_bmassj', 'disc_year', 'pl_orbeccen', 'st_mass', 'st_rad', 'st_age',
                              'teff_gspphot', 'st_spectype', 'sy_dist', 'lum_gspphot', 'radius_gspphot', 'bp_rp']
             
             for col in expected_cols:
                 if col not in planets_df.columns:
-                    logging.warning(f"Column '{col}' not found in CSV. Creating it with NaN values.")
+                    logging.warning(f"Column '{col}' not found in {PLANET_DATA_FILE}. Creating it with NaN values.")
                     planets_df[col] = np.nan
             
             return planets_df, molecules_df
@@ -132,7 +131,6 @@ class ExoplanetAnalyzer:
             logging.warning("Molecule detections dataframe is empty.")
             return pd.DataFrame()
         
-        # Filter the local dataframe for the selected planet
         detections = self.molecule_detections[
             self.molecule_detections['pl_name'].str.lower() == planet_name.lower()
         ]
@@ -141,8 +139,6 @@ class ExoplanetAnalyzer:
             logging.info(f"No local molecule detections found for {planet_name}.")
             return pd.DataFrame()
             
-        # Re-format the dataframe to match the old structure (molecule, abundance)
-        # Since we only have *detections*, we'll just plot them with a placeholder abundance of 1
         final_df = detections[['molecule']].copy()
         final_df['abundance'] = 1.0 
         final_df['abundance_err'] = 0
@@ -352,9 +348,9 @@ class ExoplanetAnalyzer:
         ttk.Button(control_frame, text="Show Atmosphere",
                    command=self.show_atmosphere).grid(row=0, column=5, padx=5)
         
-        # Removed "Refresh Data" button as it's no longer needed for main data
-        # ttk.Button(control_frame, text="Refresh Data",
-        #            command=self.refresh_data).grid(row=0, column=6, padx=5)
+        ttk.Button(control_frame, text="Refresh Data",
+                   command=self.refresh_data).grid(row=0, column=6, padx=5)
+
 
     def create_orbit_tab(self):
         """Configure orbit animation tab"""
@@ -610,7 +606,9 @@ class ExoplanetAnalyzer:
             s=20,
             label=f'All Host Stars ({len(valid_data)})',
             edgecolors='grey',
-            linewidths=0.5
+            linewidths=0.5,
+            c=valid_data['bp_rp'], # Color by bp_rp
+            cmap='RdYlBu_r' # Use a standard astronomical color map
         )
 
         selected_star_name = self.star_var.get()
@@ -621,7 +619,7 @@ class ExoplanetAnalyzer:
                 self.ax_hr.scatter(
                     star['teff_gspphot'],
                     star['lum_gspphot'], # Use direct luminosity
-                    color='red',
+                    color='lime', # Brighter color to stand out
                     s=100,
                     edgecolor='black',
                     linewidth=1,
@@ -848,20 +846,23 @@ class ExoplanetAnalyzer:
     def plot_transmission_spectrum(self, parent, planet_name, element_vars):
         """Plot transmission spectrum from MAST data in the specified parent widget."""
         logging.info(f"Plotting transmission spectrum for {planet_name}...")
-        fig = Figure(figsize=(8, 5), dpi=100)
+        fig = Figure(figsize=(8, 5), dpi=100) # Standard DPI
         ax = fig.add_subplot(111)
 
+        # Add placeholder text while fetching
         canvas_placeholder = FigureCanvasTkAgg(fig, master=parent)
         canvas_placeholder.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
         ax.text(0.5, 0.5, f"Fetching spectrum data for\n{planet_name} from MAST...\n(This can take a minute)",
                ha='center', va='center', fontsize=10)
         canvas_placeholder.draw()
-        parent.update_idletasks()
+        parent.update_idletasks() # Update UI to show message
 
+        # Fetch data (This is the slow part!)
         data = self.fetch_spectroscopy_data(planet_name)
 
-        for widget in parent.winfo_children(): widget.destroy()
-        ax.clear()
+        # Clear placeholder and plot real data (or error)
+        for widget in parent.winfo_children(): widget.destroy() # Clear placeholder canvas
+        ax.clear() # Clear axes content
 
         if data.empty or 'wavelength' not in data.columns or 'flux' not in data.columns:
             logging.warning(f"No valid spectroscopy data to plot for {planet_name}.")
@@ -869,76 +870,84 @@ class ExoplanetAnalyzer:
                    ha='center', va='center', fontsize=12)
         else:
             logging.info(f"Plotting {len(data)} data points for {planet_name}.")
+            # Plot data points with error bars if available
             instrument = data['instrument'].iloc[0] if 'instrument' in data.columns else 'Unknown Instrument'
             has_errors = 'flux_err' in data.columns and data['flux_err'].notna().any()
 
             if has_errors:
+                # Plot points with errors that are finite and positive
                 valid_error_data = data[pd.notna(data['flux_err']) & (data['flux_err'] > 0)].copy()
                 if not valid_error_data.empty:
                     ax.errorbar(
                         valid_error_data['wavelength'],
                         valid_error_data['flux'],
                         yerr=valid_error_data['flux_err'],
-                        fmt='o',
+                        fmt='o', # Points only for errorbar
                         label=f"{instrument} (with errors)",
                         capsize=3,
                         alpha=0.7,
-                        markersize=3,
-                        ecolor='gray',
+                        markersize=3, # Smaller points
+                        ecolor='gray', # Lighter error bars
                         elinewidth=1
                     )
+                    # Plot points without valid errors separately if needed
                     no_valid_error_data = data[~(pd.notna(data['flux_err']) & (data['flux_err'] > 0))].copy()
                     if not no_valid_error_data.empty:
                          ax.plot(
                              no_valid_error_data['wavelength'],
                              no_valid_error_data['flux'],
-                             'o',
+                             'o', # Points only
                              label=f"{instrument} (no valid errors)",
                              alpha=0.6,
                              markersize=3
                          )
-                else:
-                     has_errors = False
+                else: # If no points had valid errors
+                     has_errors = False # Fallback to plotting without errors
 
-            if not has_errors:
+            if not has_errors: # Plot all points without error bars
                  ax.plot(
                      data['wavelength'],
                      data['flux'],
-                     'o',
+                     'o', # Points only
                      label=f"{instrument}",
                      alpha=0.7,
                      markersize=3
                  )
             
+            # --- Plot Elemental Signatures ---
             target_unit = data['wavelength_unit'].iloc[0].lower() if 'wavelength_unit' in data.columns else 'um'
-            plot_xmin, plot_xmax = ax.get_xlim()
+            plot_xmin, plot_xmax = ax.get_xlim() # Get plot limits AFTER plotting data
             plotted_labels = set() 
             logging.info(f"Wavelength unit: {target_unit}, Plot X-limits: ({plot_xmin:.3f}, {plot_xmax:.3f})")
 
+            # Check the state of the checkboxes passed from show_atmosphere
             if element_vars:
                 for element, tk_var in element_vars.items():
-                    if tk_var.get():
+                    if tk_var.get(): # Check if the BooleanVar is True
                         signature = ATMOSPHERIC_SIGNATURES[element] 
                         logging.debug(f"Checkbox '{element}' is checked. Plotting lines.")
                         
                         for wl_um in signature['wavelengths']:
+                            # Convert signature wavelength (µm) to the plot's unit
                             converted_wl = wl_um
                             if 'nm' in target_unit or 'nanometer' in target_unit:
                                 converted_wl *= 1000
                             elif 'angstrom' in target_unit:
                                 converted_wl *= 10000
-                            elif 'm' == target_unit:
+                            # Add more conversions if other units appear (e.g., meters)
+                            elif 'm' == target_unit: # Check for meters
                                 converted_wl *= 1e-6
 
+                            # Only plot if the line falls within the current x-axis range
                             if plot_xmin <= converted_wl <= plot_xmax:
-                                label = element if element not in plotted_labels else None
+                                label = element if element not in plotted_labels else None # Label line only once per element
                                 ax.axvline(
                                     x=converted_wl,
                                     color=signature['color'],
-                                    linestyle=':',
-                                    alpha=0.9,
+                                    linestyle=':', # Dotted line
+                                    alpha=0.9,     # More visible
                                     label=label,
-                                    linewidth=1.5
+                                    linewidth=1.5   # Slightly thicker
                                 )
                                 plotted_labels.add(element)
                                 logging.debug(f"Plotted '{element}' line at {converted_wl:.3f} {target_unit}")
@@ -950,15 +959,18 @@ class ExoplanetAnalyzer:
 
             ax.set_title(f"Transmission Spectrum: {planet_name}", fontsize=12)
             ax.set_xlabel(f"Wavelength ({target_unit})", fontsize=10)
+            # Y-axis label might need adjustment based on typical FITS 'FLUX' meaning (often relative flux or depth)
             ax.set_ylabel("Relative Flux / Transit Depth", fontsize=10) 
             
+            # Add legend only if there are labels to show
             handles, labels = ax.get_legend_handles_labels()
             if labels:
                  ax.legend(handles, labels, fontsize=8, loc='best') 
 
-            ax.grid(True, linestyle=':', alpha=0.5)
+            ax.grid(True, linestyle=':', alpha=0.5) # Lighter grid
             logging.info(f"Finished plotting spectrum for {planet_name}.")
 
+        # Create final canvas in the parent widget
         canvas = FigureCanvasTkAgg(fig, master=parent)
         canvas.draw()
         canvas.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
@@ -1004,7 +1016,7 @@ class ExoplanetAnalyzer:
 
     def refresh_data(self):
         """This function is depreciated as we now load from a local file."""
-        messagebox.showinfo("Local Data", f"The application is running on the local data file '{DATA_FILE}'.\n\nTo refresh the data, please download a new file from the NASA Exoplanet Archive and replace your existing CSV.")
+        messagebox.showinfo("Local Data", f"The application is running on the local data file '{PLANET_DATA_FILE}'.\n\nTo refresh the data, please download a new file from the NASA Exoplanet Archive and replace your existing CSV.")
         logging.info("Refresh button clicked, but app is in local mode. No action taken.")
 
 
