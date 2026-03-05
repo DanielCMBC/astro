@@ -176,7 +176,7 @@ class ExoplanetScientificSuite:
         self.update_hr_diagram(p_data)
         self.draw_black_body(p_data)
         
-        # This will automatically find and plot the file
+        # Finder and Plotter for tables' data
         self.auto_plot_spectra(p_name)
 
         # Molecule Check
@@ -196,7 +196,7 @@ class ExoplanetScientificSuite:
         
         found_files = []
         
-        # 2. AUTO-SEARCH: Hunt down any .tbl file that starts with this prefix in the entire project folder
+        # 2.Hunt down any .tbl file that starts with this prefix in the entire project folder
         for root_dir, dirs, files in os.walk('.'):
             for file in files:
                 if file.startswith(file_prefix) and file.endswith('.tbl'):
@@ -211,7 +211,7 @@ class ExoplanetScientificSuite:
 
         plotted = False
         
-        # 3. ROBUST CUSTOM PARSER: Loop through all matching files and plot them
+        # 3. Loop through all matching files and plot them
         for file_path in found_files:
             x_vals, y_vals, err_vals = [], [], []
             
