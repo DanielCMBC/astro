@@ -9,6 +9,7 @@ tenacity
 requests
 
 1. Go to those links and download ALL necessarry tables:
+https://pixeldrain.com/u/esjzYcVH
 file thumbnail
 55_Cnc_e_3.10924_3673_1.tbl
 https://pixeldrain.com/u/Vzxfvr6t
