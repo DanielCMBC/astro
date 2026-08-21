@@ -209,3 +209,95 @@ def test_the_hd80606b_slice_renders(renderer):
 
     assert image.shape == (240, 320, 3)
     assert _lit_pixels(image) > 50
+
+
+# -- batching and LOD through a real context (review section 15) ------------
+
+
+def test_a_six_planet_system_costs_one_orbit_draw_call(renderer):
+    """Review section 15: batched orbit geometry."""
+    from astro_explorer.app.vertical_slice import build_slice, load_reference_catalog
+    from astro_explorer.rendering.scene_builder import build_frame_scene
+
+    try:
+        catalog = load_reference_catalog()
+    except FileNotFoundError:  # pragma: no cover
+        pytest.skip("reference snapshot not committed")
+
+    system = build_slice("Kepler-11", catalog)
+    scene = build_frame_scene(
+        system.frame, system.star, system.planets,
+        mean_anomalies=system.mean_anomalies(2455590.0),
+    )
+    assert len(scene.orbits) == 6
+
+    camera = Camera(target=np.zeros(3), distance=1.5, aspect=320 / 240, pitch=1.1)
+    image = renderer.render(scene, camera)
+
+    # Six orbits, one draw call - the point of batching them.
+    assert renderer.last_orbit_draw_calls == 1
+
+    # Planets cost one instanced draw per (material, LOD) group, never one
+    # per planet. Kepler-11's six span two material classes at one LOD.
+    materials = {planet.material_id for planet in scene.planets}
+    levels = {int(planet.lod) for planet in scene.planets}
+    assert renderer.last_planet_draw_calls == len(materials) * len(levels)
+    assert renderer.last_planet_draw_calls < len(scene.planets)
+    assert _lit_pixels(image) > 100
+
+
+def test_mixed_lod_costs_one_draw_call_per_level(renderer):
+    from astro_explorer.rendering.renderer import RenderPlanet, SceneDescription
+
+    planets = [
+        RenderPlanet("near", [0.0, 0.0, 0.0], 0.5, lod=4),
+        RenderPlanet("mid", [2.0, 0.0, 0.0], 0.2, lod=2),
+        RenderPlanet("far", [4.0, 0.0, 0.0], 0.05, lod=1),
+        RenderPlanet("far2", [5.0, 0.0, 0.0], 0.05, lod=1),
+    ]
+    scene = SceneDescription(
+        stars=[RenderStar("S", [-6, 0, 0], 0.3, (1, 1, 1))], planets=planets
+    )
+    camera = Camera(target=np.array([2.5, 0, 0]), distance=9.0, aspect=320 / 240)
+    renderer.render(scene, camera)
+
+    # Three distinct LOD levels, one material -> three draws, not four.
+    assert renderer.last_planet_draw_calls == 3
+
+
+def test_every_lod_level_renders_something(renderer):
+    from astro_explorer.rendering.renderer import RenderPlanet, SceneDescription
+
+    camera = Camera(target=np.zeros(3), distance=3.0, aspect=320 / 240, pitch=0.0)
+    for lod in range(5):
+        scene = SceneDescription(
+            stars=[RenderStar("S", [-8, 0, 0], 0.05, (1, 1, 1))],
+            planets=[RenderPlanet("P", [0, 0, 0], 1.0, base_color=(0.9, 0.9, 0.9), lod=lod)],
+        )
+        assert _lit_pixels(renderer.render(scene, camera)) > 100, lod
+
+
+def test_a_coarse_lod_uses_fewer_triangles(renderer):
+    assert renderer._mesh_for(1).triangle_count < renderer._mesh_for(4).triangle_count
+    assert renderer._mesh_for(0).triangle_count == 20
+
+
+def test_labels_can_be_composited_onto_a_frame(renderer):
+    from astro_explorer.rendering.labels import draw_labels
+    from astro_explorer.rendering.renderer import RenderPlanet, SceneDescription
+
+    scene = SceneDescription(
+        stars=[RenderStar("S", [0, 0, 0], 0.3, (1, 1, 1), label="Host")],
+        planets=[RenderPlanet("P", [1.5, 0, 0], 0.1, label="Host b")],
+    )
+    camera = Camera(target=np.zeros(3), distance=4.0, aspect=320 / 240, pitch=0.6)
+    image = renderer.render(scene, camera)
+    placements = scene.project_labels(camera, 320, 240)
+    assert placements
+
+    labelled = draw_labels(image, placements, header=["a header line"])
+    assert labelled.shape == image.shape
+    assert labelled.dtype == np.uint8
+    # Text adds lit pixels without touching the original array.
+    assert _lit_pixels(labelled) > _lit_pixels(image)
+    assert not np.array_equal(labelled, image)

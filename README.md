@@ -100,6 +100,18 @@ Verified against independently derivable values: `|r|` at periastron equals
 `sqrt(mu(1+e)/(a(1-e)))`, and the specific orbital energy matches `-mu/2a`
 to a relative 1.9e-15. See [`docs/vertical-slice.md`](docs/vertical-slice.md).
 
+## Multi-planet systems
+
+```bash
+python -m astro_explorer.app.system_demo --host Kepler-11
+python -m astro_explorer.app.system_demo --host TRAPPIST-1 --frames 8
+```
+
+Six orbits cost one draw call; planets cost one instanced draw per
+(material, LOD) group. Each planet's phase provenance is tracked separately,
+so a system with published epochs and one without are never reported the
+same way. See [`docs/multi-planet.md`](docs/multi-planet.md).
+
 ## Layout
 
 ```
@@ -118,7 +130,7 @@ src/astro_explorer/
                                scene contract, OpenGL 3.3 backend
     app/                       state and controller
     ui/                        Tkinter shell and matplotlib plots
-tests/                         444 tests
+tests/                         481 tests
 docs/                          architecture, physics, provenance, assets, roadmap status
 legacy/                        the original single-file program, preserved
 tables/                        733 NASA IPAC atmospheric spectra
@@ -166,6 +178,7 @@ resource in `assets/manager.py` is enough to get it bundled.
 
 * [`docs/vertical-slice.md`](docs/vertical-slice.md)
 * [`docs/orbital-semantics.md`](docs/orbital-semantics.md)
+* [`docs/multi-planet.md`](docs/multi-planet.md)
 * [`docs/architecture.md`](docs/architecture.md)
 * [`docs/physics.md`](docs/physics.md)
 * [`docs/data-provenance.md`](docs/data-provenance.md)

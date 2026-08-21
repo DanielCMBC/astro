@@ -63,8 +63,9 @@ its absence. `physics/gravity.py` is likewise deferred with Phase 10.
 | 3 - replace legacy OpenGL internals | done: `rendering/gl_backend.py` renders through VAO/VBO/EBO, GLSL 3.3 core programs and instanced draws, offscreen. No `glBegin`, `gluSphere` or matrix stack anywhere - asserted by test. Picking and the sphere meshes were already in place. |
 | 4 - one correct star + one planet | done: see [`vertical-slice.md`](vertical-slice.md). HD 80606 b (`e = 0.93183`) end to end, verified against independently derivable values. |
 | 4a - orbital-semantics pass (review section 14) | done |
-| 5 - complete host systems / multi-planet SystemFrame | next |
-| 6-11 | not started |
+| 5 - multi-planet SystemFrame rendering (review section 15) | done: see [`multi-planet.md`](multi-planet.md). Kepler-11, TRAPPIST-1 and HD 219134; batched orbits, per-system LOD, labels, system panel, physical time controls. |
+| 6 - offline scientific database | partly: SQLite store, staging, validation and atomic replace exist; Parquet spectra and provenance queries pending |
+| 7-11 | not started |
 
 ### Phase 4 acceptance criteria
 
@@ -104,6 +105,20 @@ See [`orbital-semantics.md`](orbital-semantics.md).
 
 Review section 6 (physical vs display radius) is enforced by
 `test_display_radius_never_reaches_the_science_layers`.
+
+## Review section 15 - multi-planet rendering
+
+| Feature | Status |
+|---|---|
+| multiple planets | done |
+| batched orbit geometry | done - N orbits, one indexed LINES draw |
+| per-system local coordinates | done - `SystemFrame` |
+| per-system LOD | done - `assign_lod`, mesh cache per level |
+| labels | done - `project_labels` + `rendering/labels.py` |
+| system information panel | done - `SystemSlice.describe_system` |
+| physical time controls | done - `--frames`, `--periods` |
+| display-scale disclosure | done - per-system factors in the header |
+| provenance-aware orbital fields | done - review section 14 pass |
 
 ## Formula reference coverage
 

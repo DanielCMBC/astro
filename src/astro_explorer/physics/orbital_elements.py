@@ -333,9 +333,15 @@ class OrbitalElements:
 
         if self.epoch_transit.is_known and self.eccentricity.is_known:
             # At mid-transit the true anomaly is nu = pi/2 - omega.
-            omega = self.argument_of_periastron.value_in(u.rad)
+            #
+            # When omega is unpublished the display normalisation omega := 0
+            # is used, and that is not a fudge: it fixes the planet at
+            # inferior conjunction at the transit time, which is exactly what
+            # was observed. What stays unknown is the orbit's orientation
+            # *within* its plane, and that is already flagged separately.
+            omega = self.argument_of_periapsis_planet.value_in(u.rad)
             if omega is None:
-                return None
+                omega = 0.0
             from .kepler import eccentric_from_true_anomaly, mean_anomaly_from_eccentric
 
             e = self.eccentricity.value

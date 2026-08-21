@@ -14,7 +14,7 @@ the contract can be tested headlessly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -152,6 +152,71 @@ class SceneDescription:
             for planet in self.planets
         ]
         return np.ascontiguousarray(np.vstack(rows), dtype=np.float32)
+
+    def assign_lod(self, camera, viewport_height: int) -> None:
+        """Choose a sphere subdivision per body from its projected size.
+
+        Per-system LOD (review section 15): a tightly packed system seen
+        from outside has inner planets a few pixels across and outer ones
+        larger, and there is no reason to spend 5120 triangles on a body
+        covering four pixels.
+        """
+        from .mesh import lod_for_distance
+
+        eye = np.asarray(camera.position, dtype=np.float64)
+        for index, planet in enumerate(self.planets):
+            distance = float(np.linalg.norm(planet.position_local - eye))
+            level = lod_for_distance(
+                planet.radius_display, distance, viewport_height, camera.fov_y_rad
+            )
+            self.planets[index] = replace(planet, lod=int(level))
+
+    def project_labels(self, camera, width: int, height: int, *, margin: int = 4):
+        """Screen positions for body labels (review section 15).
+
+        Returns ``(identifier, x, y, depth, screen_radius)`` for every
+        labelled body that is in front of the camera and inside the
+        viewport. Placement is computed here rather than in a shader so any
+        UI - a GL text pass, a Qt overlay, or PIL in the demo - can draw
+        them the same way.
+
+        ``screen_radius`` lets a caller push the text clear of the body
+        instead of writing across it, which matters for a host star that
+        fills a fair part of the frame.
+        """
+        view_projection = camera.view_projection()
+        placements = []
+
+        for body in list(self.stars) + list(self.planets):
+            if not body.label:
+                continue
+            clip = view_projection @ np.append(
+                np.asarray(body.position_local, dtype=np.float64), 1.0
+            )
+            if clip[3] <= 0.0:
+                continue  # behind the camera
+            ndc = clip[:3] / clip[3]
+            if not (-1.0 <= ndc[0] <= 1.0 and -1.0 <= ndc[1] <= 1.0):
+                continue
+            x = (ndc[0] * 0.5 + 0.5) * width
+            y = (1.0 - (ndc[1] * 0.5 + 0.5)) * height
+            if not (margin <= x <= width - margin and margin <= y <= height - margin):
+                continue
+
+            # Projected radius in pixels: r / (d tan(fov/2)) * (height/2).
+            radius = getattr(body, "radius_display", 0.0)
+            screen_radius = (
+                radius / max(float(clip[3]), 1e-12)
+                / np.tan(0.5 * camera.fov_y_rad)
+                * (height * 0.5)
+            )
+            placements.append(
+                (body.label, float(x), float(y), float(clip[3]), float(screen_radius))
+            )
+
+        # Nearest first, so a collision resolver drops the far label.
+        placements.sort(key=lambda item: item[3])
+        return placements
 
     def star_instance_buffer(self) -> np.ndarray:
         """Per-instance attributes for stars: ``position(3) radius(1) color(3)``."""

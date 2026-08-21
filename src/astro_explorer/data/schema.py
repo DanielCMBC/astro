@@ -36,7 +36,15 @@ from ..physics.stellar import (
 from ..provenance import Parameter, measured, unknown
 from .nasa_archive import SolutionPolicy
 
-__all__ = ["StarRecord", "PlanetRecord", "parse_float", "build_planet_record"]
+__all__ = [
+    "StarRecord",
+    "PlanetRecord",
+    "parse_float",
+    "clean_text",
+    "clean_reference",
+    "reference_url",
+    "build_planet_record",
+]
 
 
 #: The archive wraps references in an HTML anchor.  Both the display name
@@ -65,6 +73,20 @@ def reference_url(raw: Any) -> str | None:
         return None
     url = match.group(1).strip("\"'")
     return url or None
+
+
+def clean_text(value: Any) -> str:
+    """Catalogue text with the archive's null spellings removed.
+
+    A missing string column arrives from pandas as float NaN, which is
+    truthy under ``or ""`` and would print as the word "nan".
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in ("nan", "null", "none", "--") else text
 
 
 def parse_float(value: Any, default: float = math.nan) -> float:
@@ -309,7 +331,7 @@ def build_planet_record(
             row, name, unit, table=table, reference=stellar_reference, retrieved=retrieved
         )
 
-    host_name = str(row.get("hostname") or "").strip()
+    host_name = clean_text(row.get("hostname"))
     teff = stellar_column("st_teff", u.K)
     st_radius = stellar_column("st_rad", u.R_sun)
     st_mass = stellar_column("st_mass", u.M_sun)
@@ -335,7 +357,7 @@ def build_planet_record(
         luminosity=luminosity,
         metallicity=stellar_column("st_met", u.dimensionless_unscaled),
         age=stellar_column("st_age", u.Gyr),
-        spectral_type=str(row.get("st_spectype") or "").strip(),
+        spectral_type=clean_text(row.get("st_spectype")),
         position=sky_position(
             host_name,
             parse_float(row.get("ra")),
@@ -365,7 +387,7 @@ def build_planet_record(
     arg_periastron = column("pl_orblper", u.deg)
 
     elements = OrbitalElements(
-        name=str(row.get("pl_name") or "").strip(),
+        name=clean_text(row.get("pl_name")),
         semimajor_axis=axis,
         # Roadmap 3.4: an absent eccentricity stays UNKNOWN here.
         eccentricity=column("pl_orbeccen", u.dimensionless_unscaled),
@@ -397,7 +419,7 @@ def build_planet_record(
     )
 
     return PlanetRecord(
-        name=str(row.get("pl_name") or "").strip(),
+        name=clean_text(row.get("pl_name")),
         host=star,
         elements=elements,
         radius_earth=column("pl_rade", u.R_earth),
@@ -405,10 +427,10 @@ def build_planet_record(
         density=column("pl_dens", u.g / u.cm**3),
         equilibrium_temperature_published=column("pl_eqt", u.K),
         insolation_published=column("pl_insol", u.dimensionless_unscaled),
-        mass_provenance=str(row.get("pl_bmassprov") or "").strip(),
-        discovery_method=str(row.get("discoverymethod") or "").strip(),
+        mass_provenance=clean_text(row.get("pl_bmassprov")),
+        discovery_method=clean_text(row.get("discoverymethod")),
         discovery_year=column("disc_year", u.yr),
-        discovery_facility=str(row.get("disc_facility") or "").strip(),
+        discovery_facility=clean_text(row.get("disc_facility")),
         solution_policy=policy,
         source_table=table,
         reference=reference,

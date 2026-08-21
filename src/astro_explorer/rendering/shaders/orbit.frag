@@ -2,23 +2,24 @@
 // Orbit path fragment stage.
 //
 // A dashed path means at least one orbital element used to draw it was an
-// assumption rather than a measurement. The renderer is told only whether to
-// dash; the reason belongs to the UI, which shows it in words.
+// assumption rather than a measurement. The renderer is told only the dash
+// period; the reason belongs to the UI, which shows it in words.
+//
+// A dash period of zero means "solid", which is how a fully measured orbit
+// is signalled without needing a separate draw call.
 
 in float v_arclength;
-
-uniform vec4 u_color;
-uniform bool u_dashed;
-uniform float u_dash_period;
+in vec4 v_color;
+in float v_dash_period;
 
 out vec4 frag_color;
 
 void main() {
-    if (u_dashed) {
-        float phase = fract(v_arclength / max(u_dash_period, 1e-6));
+    if (v_dash_period > 0.0) {
+        float phase = fract(v_arclength / v_dash_period);
         if (phase > 0.55) {
             discard;
         }
     }
-    frag_color = u_color;
+    frag_color = v_color;
 }

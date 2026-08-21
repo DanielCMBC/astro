@@ -71,14 +71,20 @@ class GLRenderer:
         self.ctx = context or moderngl.create_standalone_context(require=330)
         self.library = ShaderLibrary()
         self._lod = lod
+        self._default_lod = int(np.clip(lod, 0, 5))
 
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.ctx.enable(moderngl.CULL_FACE)
 
         self._programs: dict[str, "moderngl.Program"] = {}
-        self._sphere = icosphere(lod)
-        self._build_sphere_buffers(self._sphere)
+        self._meshes: dict[int, Mesh] = {}
+        self._sphere_buffers: dict[int, tuple] = {}
+        self._sphere = self._mesh_for(self._default_lod)
         self._build_framebuffer()
+
+        #: Draw calls issued by the last frame, for the batching tests.
+        self.last_planet_draw_calls = 0
+        self.last_orbit_draw_calls = 0
 
     # -- setup -----------------------------------------------------------
     def _program(self, name: str):
@@ -87,11 +93,34 @@ class GLRenderer:
             self._programs[name] = self.ctx.program(**self.library.program_sources(name))
         return self._programs[name]
 
-    def _build_sphere_buffers(self, mesh: Mesh) -> None:
-        """One VBO + EBO for the shared unit sphere."""
-        self._vbo = self.ctx.buffer(mesh.vertex_bytes)
-        self._ebo = self.ctx.buffer(mesh.index_bytes)
-        self._index_count = mesh.triangle_count * 3
+    def _mesh_for(self, lod: int) -> Mesh:
+        """Unit sphere at a subdivision level, built and uploaded once.
+
+        Per-system LOD means several levels can be live simultaneously - a
+        close planet at level 4, a distant one at level 1 - so meshes are
+        cached by level rather than replaced.
+        """
+        level = int(np.clip(lod, 0, 5))
+        if level not in self._meshes:
+            mesh = icosphere(level)
+            self._meshes[level] = mesh
+            self._sphere_buffers[level] = (
+                self.ctx.buffer(mesh.vertex_bytes),
+                self.ctx.buffer(mesh.index_bytes),
+            )
+        return self._meshes[level]
+
+    @property
+    def _vbo(self):
+        return self._sphere_buffers[self._default_lod][0]
+
+    @property
+    def _ebo(self):
+        return self._sphere_buffers[self._default_lod][1]
+
+    @property
+    def _index_count(self) -> int:
+        return self._meshes[self._default_lod].triangle_count * 3
 
     def _build_framebuffer(self) -> None:
         settings = self.settings
@@ -141,8 +170,12 @@ class GLRenderer:
         ("in_uv", "2f", 8),
     ]
 
-    def _sphere_vao(self, program, instance_data: np.ndarray, instance_fields):
-        """VAO binding the shared sphere plus a per-instance buffer."""
+    def _sphere_vao(self, program, instance_data: np.ndarray, instance_fields, lod=None):
+        """VAO binding a shared sphere plus a per-instance buffer."""
+        level = self._default_lod if lod is None else int(np.clip(lod, 0, 5))
+        self._mesh_for(level)
+        vbo, ebo = self._sphere_buffers[level]
+
         buffer = self.ctx.buffer(np.ascontiguousarray(instance_data, dtype="f4").tobytes())
 
         vertex_layout, vertex_names = self._binding(program, self._SPHERE_FIELDS)
@@ -150,11 +183,11 @@ class GLRenderer:
             program, instance_fields, per_instance=True
         )
 
-        content = [(self._vbo, vertex_layout, *vertex_names)]
+        content = [(vbo, vertex_layout, *vertex_names)]
         if instance_names:
             content.append((buffer, instance_layout, *instance_names))
 
-        vao = self.ctx.vertex_array(program, content, self._ebo)
+        vao = self.ctx.vertex_array(program, content, ebo)
         return vao, buffer
 
     # -- drawing ---------------------------------------------------------
@@ -178,6 +211,8 @@ class GLRenderer:
             else (0.0, 0.0, 0.0)
         )
 
+        self.last_planet_draw_calls = 0
+        self.last_orbit_draw_calls = 0
         self._draw_stars(scene, view_projection, camera_position, time)
         self._draw_planets(scene, view_projection, camera_position, star_position)
         if self.settings.draw_orbits:
@@ -224,12 +259,17 @@ class GLRenderer:
         if not scene.planets:
             return
 
-        # Group by material so each shader family is one instanced draw.
-        by_material: dict[str, list] = {}
+        # Group by (material, LOD) so each shader family at each detail
+        # level is a single instanced draw. A six-planet system where the
+        # inner three are close and the outer three distant costs at most
+        # two draws, not six.
+        by_group: dict[tuple, list] = {}
         for planet in scene.planets:
-            by_material.setdefault(planet.material_id, []).append(planet)
+            by_group.setdefault((planet.material_id, int(planet.lod)), []).append(planet)
 
-        for material_id, planets in by_material.items():
+        self.last_planet_draw_calls = len(by_group)
+
+        for (material_id, lod), planets in by_group.items():
             definition = MATERIALS.get(material_id, MATERIALS["rocky"])
             program = self._program(definition.program)
             program["u_view_projection"].write(view_projection)
@@ -256,46 +296,106 @@ class GLRenderer:
                     ("instance_color", "3f", 12),
                     ("instance_emissive", "1f", 4),
                 ],
+                lod=lod,
             )
             vao.render(instances=len(planets))
             vao.release()
             buffer.release()
 
     def _draw_orbits(self, scene, view_projection) -> None:
+        """Every orbit in one indexed draw call.
+
+        Orbit paths are concatenated into a single vertex buffer and drawn
+        as ``LINES`` through an index buffer, so a six-planet system costs
+        one draw call instead of six. ``LINE_STRIP`` cannot do this - the
+        strips would join end to end - and GL 3.3 has no portable primitive
+        restart in ModernGL, so the segments are indexed explicitly.
+
+        Per-orbit style therefore travels as vertex attributes rather than
+        uniforms: colour, and a dash period of zero meaning "solid".
+        """
         import moderngl
 
         if not scene.orbits:
             return
+
+        vertices, indices = self._batch_orbits(scene)
+        if indices.size == 0:
+            return
+
         program = self._program("orbit")
         program["u_view_projection"].write(view_projection)
         self.ctx.line_width = self.settings.orbit_line_width
-        # Orbit paths are translucent overlays; do not occlude each other.
+        # Orbit paths are translucent overlays and must not occlude one
+        # another, so depth writes are off while they are drawn.
         self.ctx.enable(moderngl.BLEND)
         self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.ctx.depth_mask = False
+
+        buffer = self.ctx.buffer(vertices.tobytes())
+        index_buffer = self.ctx.buffer(indices.tobytes())
+        layout, names = self._binding(program, self._ORBIT_FIELDS)
+        vao = self.ctx.vertex_array(
+            program, [(buffer, layout, *names)], index_buffer
+        )
+        vao.render(moderngl.LINES)
+        self.last_orbit_draw_calls = 1
+
+        vao.release()
+        buffer.release()
+        index_buffer.release()
+
+        self.ctx.depth_mask = True
+        self.ctx.disable(moderngl.BLEND)
+
+    #: Interleaved layout of the batched orbit buffer.
+    _ORBIT_FIELDS = [
+        ("in_position", "3f", 12),
+        ("in_arclength", "1f", 4),
+        ("in_color", "4f", 16),
+        ("in_dash_period", "1f", 4),
+    ]
+
+    def _batch_orbits(self, scene):
+        """Pack every orbit into one vertex array and one index array."""
+        vertex_blocks = []
+        index_blocks = []
+        offset = 0
 
         for orbit in scene.orbits:
             points = orbit.points_local
+            count = points.shape[0]
+            if count < 2:
+                continue
+
             # Cumulative arc length drives the dash pattern, so dashes stay
             # even along a highly eccentric path where the sample spacing
             # varies by orders of magnitude.
             segments = np.linalg.norm(np.diff(points, axis=0), axis=1)
-            arclength = np.concatenate([[0.0], np.cumsum(segments)]).astype("f4")
+            arclength = np.concatenate([[0.0], np.cumsum(segments)])
             total = float(arclength[-1]) or 1.0
+            dash = total * self.settings.dash_period if orbit.dashed else 0.0
 
-            interleaved = np.hstack([points, arclength[:, None]]).astype("f4")
-            buffer = self.ctx.buffer(np.ascontiguousarray(interleaved).tobytes())
-            vao = self.ctx.vertex_array(
-                program, [(buffer, "3f 1f", "in_position", "in_arclength")]
-            )
-            program["u_color"].value = orbit.color
-            program["u_dashed"].value = bool(orbit.dashed)
-            program["u_dash_period"].value = total * self.settings.dash_period
+            block = np.empty((count, 9), dtype=np.float32)
+            block[:, 0:3] = points
+            block[:, 3] = arclength
+            block[:, 4:8] = orbit.color
+            block[:, 8] = dash
+            vertex_blocks.append(block)
 
-            vao.render(moderngl.LINE_STRIP)
-            vao.release()
-            buffer.release()
+            # One line segment per consecutive pair, indexed so the strips
+            # never join across orbits.
+            starts = np.arange(count - 1, dtype=np.uint32) + offset
+            index_blocks.append(np.stack([starts, starts + 1], axis=-1).ravel())
+            offset += count
 
-        self.ctx.disable(moderngl.BLEND)
+        if not vertex_blocks:
+            return np.zeros((0, 9), dtype=np.float32), np.zeros(0, dtype=np.uint32)
+
+        return (
+            np.ascontiguousarray(np.vstack(vertex_blocks), dtype=np.float32),
+            np.ascontiguousarray(np.concatenate(index_blocks), dtype=np.uint32),
+        )
 
     # -- output ----------------------------------------------------------
     def save_png(self, image: np.ndarray, path) -> None:
@@ -319,8 +419,11 @@ class GLRenderer:
         for program in self._programs.values():
             program.release()
         self._programs.clear()
-        self._vbo.release()
-        self._ebo.release()
+        for vbo, ebo in self._sphere_buffers.values():
+            vbo.release()
+            ebo.release()
+        self._sphere_buffers.clear()
+        self._meshes.clear()
         if self._msaa is not None:
             self._msaa.release()
         self._resolve.release()

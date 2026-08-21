@@ -143,14 +143,32 @@ class SystemSlice:
         # The rate is physical even when the absolute phase is not.
         return float(np.mod(motion * (time_bjd - JD_UNIX_EPOCH), 2.0 * np.pi)), True
 
-    def mean_anomalies(self, time_bjd: float) -> dict[str, float]:
-        """Mean anomalies for every planet whose phase is defined."""
-        result: dict[str, float] = {}
+    def placements(self, time_bjd: float) -> dict[str, tuple[float, bool]]:
+        """``name -> (mean anomaly, phase_is_assumed)`` for every placeable planet.
+
+        The flag matters. A planet with a published epoch is where the
+        ephemeris says it is; one without is being advanced at the right
+        *rate* from an arbitrary zero, which is a picture of the motion and
+        not a claim about tonight's sky.
+        """
+        found: dict[str, tuple[float, bool]] = {}
         for record in self.planets:
-            anomaly, _assumed = self.mean_anomaly(record, time_bjd)
+            anomaly, assumed = self.mean_anomaly(record, time_bjd)
             if anomaly is not None:
-                result[record.name] = anomaly
-        return result
+                found[record.name] = (anomaly, assumed)
+        return found
+
+    def mean_anomalies(self, time_bjd: float, *, include_assumed: bool = True) -> dict[str, float]:
+        """Mean anomalies for every planet whose phase can be drawn.
+
+        Pass ``include_assumed=False`` to place only planets whose phase is
+        constrained by a published epoch.
+        """
+        return {
+            name: anomaly
+            for name, (anomaly, assumed) in self.placements(time_bjd).items()
+            if include_assumed or not assumed
+        }
 
     def state(self, record: PlanetRecord, time_bjd: float) -> StateVector | None:
         """Full inertial state in the system frame, in AU and AU/day.
@@ -316,6 +334,74 @@ class SystemSlice:
         if residual is not None:
             lines.append("  Kepler III residual: {0:+.4%}".format(residual))
 
+        return lines
+
+    def describe_system(self, time_bjd: float) -> list[str]:
+        """System information panel (review section 15).
+
+        One row per planet, ordered outwards, stating what is actually
+        known about each orbit rather than only its numbers.
+        """
+        lines = [
+            "SYSTEM: {0}".format(self.frame.host_name),
+            "  {0}".format(" | ".join(self.star.describe()[1:4]).replace("  ", " ")),
+            "",
+            "  {0:<14} {1:>10} {2:>10} {3:>7} {4:>9}  {5}".format(
+                "planet", "a (AU)", "P (d)", "e", "r (AU)", "validity"
+            ),
+        ]
+
+        for record in self.planets:
+            elements = record.elements
+            axis = elements.semimajor_axis.value_in(u.au)
+            period = elements.period.value_in(u.day)
+            ecc = elements.eccentricity.value
+
+            state = self.state(record, time_bjd)
+            radius = "{0:9.5f}".format(float(state.radius)) if state is not None else "        -"
+
+            lines.append(
+                "  {0:<14} {1:>10} {2:>10} {3:>7} {4}  {5}".format(
+                    record.name,
+                    "{0:.5f}".format(axis) if axis is not None else "-",
+                    "{0:.4f}".format(period) if period is not None else "-",
+                    "{0:.4f}".format(ecc) if ecc is not None else "unk",
+                    radius,
+                    ",".join(
+                        name.replace("_VALID", "").replace("ORIENTATION_", "ORIENT:")
+                        for name in elements.validity.names
+                    )
+                    or "NONE",
+                )
+            )
+
+        placements = self.placements(time_bjd)
+        from_ephemeris = sum(1 for _a, assumed in placements.values() if not assumed)
+        assumed_phase = len(placements) - from_ephemeris
+        not_drawn = len(self.planets) - len(placements)
+
+        lines += [
+            "",
+            "  {0} planet(s): {1} positioned from a published epoch, {2} with an "
+            "assumed phase, {3} not placed".format(
+                len(self.planets), from_ephemeris, assumed_phase, not_drawn
+            ),
+        ]
+        if assumed_phase:
+            lines.append(
+                "  An assumed phase advances the planet at the correct rate from an "
+                "arbitrary zero: the motion is physical, the current position is not."
+            )
+        unknown_nodes = sum(
+            1 for r in self.planets if not r.elements.longitude_of_ascending_node.is_known
+        )
+        if unknown_nodes:
+            lines.append(
+                "  Ascending node unknown for {0}/{1} planets; all normalised to 0 deg "
+                "for display, so relative node alignment is not measured.".format(
+                    unknown_nodes, len(self.planets)
+                )
+            )
         return lines
 
     def describe_provenance(self) -> list[str]:
