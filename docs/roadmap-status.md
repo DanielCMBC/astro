@@ -134,6 +134,26 @@ The one item the multi-planet review held back before the GitHub replay.
 | physical clock kept as a regression | `test_the_physical_clock_gives_each_planet_its_own_period` |
 | NaN / missing-string boundary utility | `astro_explorer/text.py` |
 
+## Continuous integration
+
+The suite is large enough to act as the project's scientific specification,
+so it no longer depends on anyone remembering to run it.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push
+to every branch.
+
+| Job | Contents |
+|---|---|
+| `tests` (3.11, 3.12) | architecture tests, full suite, offline snapshot check |
+| `opengl` | Mesa software GL under Xvfb: context verification, shader compilation, GL and multi-planet tests, both demos rendered and uploaded |
+
+`scripts/verify_gl.py` runs before the GL tests and fails hard when no
+context can be created. `GLRenderer`, the verifier and the test fixture all
+create their context through one factory
+(`rendering.gl_backend.create_standalone_context`), so verification cannot
+succeed on a backend the tests never try.
+
+`tests/regression/test_ci_workflow.py` tests the workflow definition itself.
+
 ## Formula reference coverage
 
 `ORBITAL_MECHANICS_FORMULAS_3D_EXOPLANET.md`, section by section.

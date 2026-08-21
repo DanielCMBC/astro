@@ -28,19 +28,23 @@ dependencies = [
 # Catalog synchronisation against remote services.
 sync = ["astroquery>=0.4.7"]
 # Modern core-profile OpenGL renderer (roadmap section 4.8).
-render = ["moderngl>=5.8", "pygame>=2.5"]
+# Pillow composites body labels onto a rendered frame (rendering/labels.py).
+render = ["moderngl>=5.8", "pygame>=2.5", "pillow>=10.0"]
 # Optional N-body dynamics mode (roadmap section 17).
 dynamics = ["rebound>=4.0"]
 # Long-term scientific workstation UI (roadmap section 7).
 ui = ["PySide6>=6.6", "pyqtgraph>=0.13"]
-dev = ["pytest>=8.0", "pytest-cov>=4.1"]
+# pyyaml lets the test suite check the CI workflow definition itself.
+dev = ["pytest>=8.0", "pytest-cov>=4.1", "pyyaml>=6.0"]
 build = ["pyinstaller>=6.3"]
 all = [
     "astroquery>=0.4.7",
     "moderngl>=5.8",
     "pygame>=2.5",
+    "pillow>=10.0",
     "rebound>=4.0",
     "pytest>=8.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

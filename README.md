@@ -1,10 +1,14 @@
 # Exoplanet Scientific Suite
 
+[![CI](https://github.com/DanielCMBC/astro/actions/workflows/ci.yml/badge.svg?branch=3D-test)](https://github.com/DanielCMBC/astro/actions/workflows/ci.yml)
+
 An offline-first exoplanet scientific explorer: catalogue-accurate data,
 orbital mechanics, stellar physics, spectroscopy and explicit provenance.
 
-This branch holds the **corrected 2D scientific baseline** plus the reusable
-scientific core that the 3D/OpenGL engine is meant to build on, following
+This branch contains the corrected scientific baseline, the reusable
+physics/data core, and the **actively developed modern 3D/OpenGL engine** -
+a GL 3.3 core-profile renderer with a validated one-planet vertical slice
+and multi-planet system rendering. Development follows
 `EXOPLANET_2D_FIXES_AND_3D_OPENGL_ROADMAP.md`.
 
 ## The one rule
@@ -131,7 +135,7 @@ src/astro_explorer/
                                scene contract, OpenGL 3.3 backend
     app/                       state and controller
     ui/                        Tkinter shell and matplotlib plots
-tests/                         523 tests
+tests/                         540 tests
 docs/                          architecture, physics, provenance, assets, roadmap status
 legacy/                        the original single-file program, preserved
 tables/                        733 NASA IPAC atmospheric spectra
@@ -155,16 +159,31 @@ molecular_evidence.csv         detection evidence with provenance
 * Textures and colours generated from physical parameters are labelled
   "actual appearance unknown". No exoplanet surface has been imaged.
 
-## Tests
+## Tests and CI
 
 ```bash
 pytest
 ```
 
+Every push runs the suite on GitHub Actions
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), in two jobs:
+
+| Job | What it does |
+|---|---|
+| **Tests** | Python 3.11 and 3.12: architecture/golden-rule tests first, then the full suite, then an offline check that the app builds every reference system from the committed snapshot with no network. |
+| **OpenGL 3.3 core** | Mesa software rasteriser under Xvfb. Verifies a real GL 3.3 core context, compiles all five shader programs, runs the GL and multi-planet tests, and renders both demos - uploading the frames as build artifacts. |
+
+The OpenGL job runs `scripts/verify_gl.py` *before* the GL tests, and that
+script fails hard rather than skipping. Without it a runner with no driver
+would skip every OpenGL test and still report green.
+
 Beyond the physics, the suite enforces the architecture: the renderer may
 not import the data layer, render primitives may not carry scientific
 fields, no module outside `constants.py` may hard-code a physical constant,
-and the incorrect AU-to-parsec factor may not reappear.
+and the incorrect AU-to-parsec factor may not reappear. It also checks the
+CI definition itself - that the workflow triggers on every branch, that the
+architecture tests run before the rest, and that the OpenGL job cannot pass
+by skipping.
 
 ## Build
 

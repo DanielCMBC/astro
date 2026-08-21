@@ -24,10 +24,20 @@ from astro_explorer.rendering.renderer import (  # noqa: E402
 
 @pytest.fixture(scope="module")
 def context():
+    """A GL 3.3 core context, or a skip.
+
+    Uses the same factory as ``scripts/verify_gl.py`` so CI cannot verify a
+    context on one backend while these tests skip on another. In CI the
+    verification step runs first and fails hard, so a skip here can only
+    mean a developer machine without a usable driver.
+    """
+    from astro_explorer.rendering.gl_backend import create_standalone_context
+
     try:
-        ctx = moderngl.create_standalone_context(require=330)
+        ctx, backend = create_standalone_context(require=330)
     except Exception as exc:  # pragma: no cover - depends on the host
         pytest.skip("no OpenGL 3.3 core context available: {0}".format(exc))
+    print("GL context backend: {0}".format(backend))
     yield ctx
     ctx.release()
 

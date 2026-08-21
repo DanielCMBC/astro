@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run of the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Show the scientific stack
+        run: |
+          python -c "import numpy, scipy, astropy, pandas; print('numpy', numpy.__version__); print('scipy', scipy.__version__); print('astropy', astropy.__version__); print('pandas', pandas.__version__)"
+
+      # The architecture tests are the golden rule made mechanical: the
+      # renderer may not import the data layer, render primitives may not
+      # carry scientific fields, no module outside constants.py may hard-code
+      # a physical constant. They run first because a failure there means the
+      # rest of the suite is testing the wrong architecture.
+      - name: Architecture / golden-rule tests
+        run: pytest tests/regression/test_architecture.py -v
+
+      - name: Full test suite
+        run: pytest -q
+
+      - name: Offline check
+        # The application must work from the committed snapshot with no
+        # network. Everything below already runs offline; this asserts it.
+        run: |
+          python - <<'PY'
+          from astro_explorer.app.vertical_slice import build_slice, load_reference_catalog
+          catalog = load_reference_catalog()
+          for host in ("HD 80606", "Kepler-11", "TRAPPIST-1", "HD 219134"):
+              system = build_slice(host, catalog)
+              print(host, "->", len(system.planets), "planet(s)")
+          PY
+
+  opengl:
+    name: OpenGL 3.3 core (software Mesa)
+    runs-on: ubuntu-latest
+
+    env:
+      # Force Mesa's software rasteriser: the runner has no GPU.
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GALLIUM_DRIVER: llvmpipe
+      # llvmpipe advertises a lower version by default; the shaders are
+      # GLSL 330 and the pipeline is core profile.
+      MESA_GL_VERSION_OVERRIDE: "3.3"
+      MESA_GLSL_VERSION_OVERRIDE: "330"
+      PYOPENGL_PLATFORM: egl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Mesa software GL and EGL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglx-mesa0 libgl1-mesa-dri libglapi-mesa \
+            libegl1 libegl-mesa0 libgbm1 \
+            libosmesa6 \
+            xvfb
+
+      - name: Install the package with the renderer
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,render]"
+
+      # This step is the point of the job: it fails loudly if no context can
+      # be created, so a misconfigured runner cannot silently skip every
+      # OpenGL test and still report green.
+      - name: Verify a GL 3.3 core context and compile all shaders
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" python scripts/verify_gl.py
+
+      - name: OpenGL backend tests
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_gl_backend.py -v
+
+      - name: Multi-planet rendering tests
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_multi_planet.py -q
+
+      - name: Render the vertical slice and a full system
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python -m astro_explorer.app.slice_demo --out artifacts
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python -m astro_explorer.app.system_demo --host Kepler-11 --out artifacts
+
+      - name: Upload rendered frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-frames
+          path: artifacts/*.png
+          if-no-files-found: warn

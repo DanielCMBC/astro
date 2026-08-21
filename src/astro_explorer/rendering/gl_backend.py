@@ -27,16 +27,61 @@ from .materials import MATERIALS
 from .mesh import Mesh, icosphere
 from .renderer import SceneDescription, ShaderLibrary
 
-__all__ = ["GLRenderer", "RenderSettings", "moderngl_available"]
+__all__ = [
+    "GLRenderer",
+    "RenderSettings",
+    "moderngl_available",
+    "create_standalone_context",
+    "GL_BACKENDS",
+]
 
 
 def moderngl_available() -> bool:
-    """True when ModernGL can be imported and a context can be created."""
+    """True when ModernGL is importable. Says nothing about a context."""
     try:
         import moderngl  # noqa: F401
     except ImportError:
         return False
     return True
+
+
+#: Backends tried in order when the default context creation fails. A
+#: headless Linux box (CI) normally has no GLX display but does have Mesa's
+#: software EGL.
+GL_BACKENDS = ("egl", "osmesa")
+
+
+def create_standalone_context(require: int = 330):
+    """A standalone GL context, trying each backend a headless box may offer.
+
+    Returns ``(context, backend_name)``. Raises RuntimeError listing every
+    attempt when none succeed.
+
+    Both :class:`GLRenderer` and ``scripts/verify_gl.py`` go through this, so
+    CI cannot end up in the state where the verification step succeeds on one
+    backend while the test fixture skips on another.
+    """
+    import moderngl
+
+    failures = []
+    try:
+        return moderngl.create_standalone_context(require=require), "default"
+    except Exception as exc:  # pragma: no cover - depends on the host
+        failures.append("default: {0}".format(exc))
+
+    for backend in GL_BACKENDS:
+        try:
+            return (
+                moderngl.create_context(standalone=True, require=require, backend=backend),
+                backend,
+            )
+        except Exception as exc:  # pragma: no cover - depends on the host
+            failures.append("{0}: {1}".format(backend, exc))
+
+    raise RuntimeError(
+        "no OpenGL {0} context could be created:\n  ".format(require)
+        + "\n  ".join(failures)
+    )
 
 
 @dataclass
@@ -68,7 +113,10 @@ class GLRenderer:
         import moderngl
 
         self.settings = settings or RenderSettings()
-        self.ctx = context or moderngl.create_standalone_context(require=330)
+        if context is None:
+            self.ctx, self.backend = create_standalone_context(require=330)
+        else:
+            self.ctx, self.backend = context, "supplied"
         self.library = ShaderLibrary()
         self._lod = lod
         self._default_lod = int(np.clip(lod, 0, 5))
