@@ -13,6 +13,7 @@ the network disabled.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import astropy.units as u
@@ -166,8 +167,10 @@ def main(argv=None) -> int:
     try:
         path = render_phases(system_slice, record, epoch, out_dir)
     except Exception as exc:  # pragma: no cover - depends on the GL driver
-        print("\nCould not create an OpenGL context: {0}".format(exc))
-        return 0
+        # Rendering was asked for and failed. Returning 0 here would let CI
+        # report success having produced no image at all.
+        print("\nRendering FAILED: {0}".format(exc), file=sys.stderr)
+        return 1
 
     print("\nRendered -> {0}".format(path))
     return 0

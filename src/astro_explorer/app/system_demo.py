@@ -13,6 +13,7 @@ display radius and a material id. It is never handed orbital elements.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import astropy.units as u
@@ -165,8 +166,10 @@ def main(argv=None) -> int:
             span_periods=args.periods,
         )
     except Exception as exc:  # pragma: no cover - depends on the GL driver
-        print("\nCould not render: {0}".format(exc))
-        return 0
+        # Rendering was asked for and failed. Returning 0 here would let CI
+        # report success having produced no image at all.
+        print("\nRendering FAILED: {0}".format(exc), file=sys.stderr)
+        return 1
 
     print()
     print("Rendered {0} frame(s) -> {1}".format(len(written), written[0].parent))

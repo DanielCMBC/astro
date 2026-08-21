@@ -21,9 +21,9 @@ jobs:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -76,9 +76,9 @@ jobs:
       PYOPENGL_PLATFORM: egl
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -116,6 +116,21 @@ jobs:
             python -m astro_explorer.app.slice_demo --out artifacts
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
             python -m astro_explorer.app.system_demo --host Kepler-11 --out artifacts
+
+      # The render steps above exit non-zero on failure, but an empty
+      # output directory would still slip past if a demo ever changed its
+      # mind about where to write. Assert the frames exist.
+      - name: Check the frames were actually produced
+        run: |
+          shopt -s nullglob
+          frames=(artifacts/*.png)
+          if [ ${#frames[@]} -lt 2 ]; then
+            echo "expected at least 2 rendered frames, found ${#frames[@]}"
+            ls -la artifacts || true
+            exit 1
+          fi
+          echo "rendered ${#frames[@]} frame(s):"
+          ls -la artifacts/*.png
 
       - name: Upload rendered frames
         if: always()

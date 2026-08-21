@@ -188,3 +188,103 @@ def test_pillow_is_declared_because_labels_need_it():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     render = " ".join(metadata["project"]["optional-dependencies"]["render"]).lower()
     assert "pillow" in render
+
+
+# -- the two defects the first green CI run was hiding -----------------------
+
+
+def test_the_workflow_asserts_the_frames_were_produced(workflow):
+    """The first run passed while rendering nothing at all.
+
+    Both demos caught the exception, printed a note and returned 0, so the
+    step went green with an empty output directory. The upload step's
+    "no files found" was only a warning.
+    """
+    names = [step.get("name", "") for step in _steps(workflow, "opengl")]
+    assert any("Check the frames were actually produced" in n for n in names)
+
+    check = next(
+        s for s in _steps(workflow, "opengl")
+        if "Check the frames" in s.get("name", "")
+    )
+    assert "exit 1" in check["run"]
+
+    render = next(i for i, n in enumerate(names) if "Render the vertical slice" in n)
+    verify = next(i for i, n in enumerate(names) if "Check the frames" in n)
+    assert render < verify
+
+
+@pytest.mark.parametrize("module", ["slice_demo", "system_demo"])
+def test_a_failed_render_exits_non_zero(module, monkeypatch, tmp_path):
+    """A render that was asked for and failed is an error, not a shrug."""
+    import importlib
+
+    demo = importlib.import_module("astro_explorer.app.{0}".format(module))
+    target = "render_phases" if module == "slice_demo" else "render_system"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("the number of samples is invalid")
+
+    monkeypatch.setattr(demo, target, boom)
+    pytest.importorskip("moderngl")
+
+    host = "HD 80606" if module == "slice_demo" else "Kepler-11"
+    code = demo.main(["--host", host, "--out", str(tmp_path)])
+    assert code == 1
+
+
+@pytest.mark.parametrize("module", ["slice_demo", "system_demo"])
+def test_a_missing_renderer_is_not_an_error(module, monkeypatch, tmp_path):
+    """Not having ModernGL installed is benign; a broken render is not."""
+    import builtins
+    import importlib
+
+    demo = importlib.import_module("astro_explorer.app.{0}".format(module))
+    real_import = builtins.__import__
+
+    def no_moderngl(name, *args, **kwargs):
+        if name == "moderngl":
+            raise ImportError("no moderngl")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_moderngl)
+    host = "HD 80606" if module == "slice_demo" else "Kepler-11"
+    assert demo.main(["--host", host, "--out", str(tmp_path)]) == 0
+
+
+def test_multisampling_degrades_instead_of_failing():
+    """llvmpipe rejected 8x MSAA, which is what broke the first CI render."""
+    pytest.importorskip("moderngl")
+    from astro_explorer.rendering.gl_backend import GLRenderer, RenderSettings
+
+    try:
+        renderer = GLRenderer(RenderSettings(width=64, height=64, samples=4096))
+    except RuntimeError:
+        pytest.skip("no OpenGL 3.3 core context available")
+    try:
+        # Whatever the context supports, it must not have simply used 4096.
+        assert renderer.samples <= max(int(renderer.ctx.max_samples), 1)
+        assert renderer.samples >= 1
+    finally:
+        renderer.release()
+
+
+def test_rendering_still_works_at_the_clamped_sample_count():
+    pytest.importorskip("moderngl")
+    import numpy as np
+
+    from astro_explorer.rendering.camera import Camera
+    from astro_explorer.rendering.gl_backend import GLRenderer, RenderSettings
+    from astro_explorer.rendering.renderer import RenderStar, SceneDescription
+
+    try:
+        renderer = GLRenderer(RenderSettings(width=96, height=96, samples=4096))
+    except RuntimeError:
+        pytest.skip("no OpenGL 3.3 core context available")
+    try:
+        scene = SceneDescription(stars=[RenderStar("S", [0, 0, 0], 1.0, (1, 1, 1))])
+        camera = Camera(target=np.zeros(3), distance=4.0, aspect=1.0)
+        image = renderer.render(scene, camera)
+        assert int((image.sum(axis=2) > 24).sum()) > 100
+    finally:
+        renderer.release()

@@ -173,10 +173,28 @@ class GLRenderer:
     def _build_framebuffer(self) -> None:
         settings = self.settings
         size = (settings.width, settings.height)
-        if settings.samples > 1:
+
+        # A software rasteriser (llvmpipe, which is what CI has) supports
+        # fewer samples than a discrete GPU, and asking for more fails with
+        # "the number of samples is invalid". Clamp to what this context
+        # actually reports; anti-aliasing is a quality knob, not a
+        # correctness one, so degrading is right and silence is not.
+        supported = int(getattr(self.ctx, "max_samples", 0) or 0)
+        if settings.samples > 1 and supported and settings.samples > supported:
+            self.samples = supported
+        else:
+            self.samples = settings.samples
+        if self.samples != settings.samples:
+            print(
+                "GLRenderer: {0}x MSAA unsupported by this context, using {1}x".format(
+                    settings.samples, self.samples
+                )
+            )
+
+        if self.samples > 1:
             self._msaa = self.ctx.framebuffer(
-                color_attachments=[self.ctx.renderbuffer(size, samples=settings.samples)],
-                depth_attachment=self.ctx.depth_renderbuffer(size, samples=settings.samples),
+                color_attachments=[self.ctx.renderbuffer(size, samples=self.samples)],
+                depth_attachment=self.ctx.depth_renderbuffer(size, samples=self.samples),
             )
         else:
             self._msaa = None
