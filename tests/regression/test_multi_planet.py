@@ -4,7 +4,8 @@ Three systems from the committed snapshot, chosen because they fail in
 different ways:
 
 * **Kepler-11** - six planets, every one with ``a``, ``e`` and a transit
-  epoch, so all six are positioned from a published ephemeris;
+  epoch but no published ``omega``, so all six are *partially* constrained:
+  the timing is observed, the in-plane orientation is normalised;
 * **TRAPPIST-1** - seven planets, inclinations only. No eccentricities, no
   epochs, and no system distance. Everything about it must degrade
   gracefully;
@@ -128,10 +129,32 @@ def test_inner_planets_move_faster_than_outer_ones(kepler11):
 # ==========================================================================
 
 
-def test_kepler11_planets_are_positioned_from_published_epochs(kepler11):
-    placements = kepler11.placements(KEPLER11_EPOCH)
-    assert len(placements) == 6
-    assert all(not assumed for _anomaly, assumed in placements.values())
+def test_kepler11_phases_are_partially_constrained_not_fully(kepler11):
+    """Review section 9: the timing is observed, the orientation is not.
+
+    Every Kepler-11 planet has a published mid-transit time but no
+    published argument of periastron, so reading that epoch as a mean
+    anomaly goes through a normalised omega. Calling these "positioned from
+    a published epoch" would overstate them; calling them assumed would
+    understate them.
+    """
+    from astro_explorer.physics.phase import (
+        AnomalyMapping,
+        PhaseAnchor,
+        PhaseProvenance,
+        PhaseStatus,
+    )
+
+    solutions = kepler11.phase_solutions(KEPLER11_EPOCH)
+    assert len(solutions) == 6
+
+    for solution in solutions.values():
+        assert solution.is_placeable
+        assert solution.provenance is PhaseProvenance.TRANSIT_CONJUNCTION_NORMALIZED
+        assert solution.anchor is PhaseAnchor.OBSERVED
+        assert solution.mapping is AnomalyMapping.CONJUNCTION_NORMALIZED
+        assert solution.status is PhaseStatus.PARTIALLY_CONSTRAINED
+        assert solution.status.is_observationally_anchored
 
 
 def test_at_its_own_transit_time_each_planet_is_at_inferior_conjunction(kepler11):
@@ -166,14 +189,29 @@ def test_trappist1_phases_are_excluded_when_assumed_ones_are_refused(trappist):
     assert len(trappist.mean_anomalies(TRAPPIST_EPOCH)) == 7
 
 
-def test_the_panel_separates_real_from_assumed_phases(kepler11, trappist):
+def test_the_panel_reports_the_three_way_phase_vocabulary(kepler11, trappist):
+    """Neither system may be described with the old binary wording."""
     kepler_text = "\n".join(kepler11.describe_system(KEPLER11_EPOCH))
-    assert "6 positioned from a published epoch" in kepler_text
+    assert "PARTIALLY_CONSTRAINED" in kepler_text
+    assert "TRANSIT_CONJUNCTION_NORMALIZED" in kepler_text
+    assert "normalised" in kepler_text
+    # It must not claim these are fully constrained.
+    assert "6  CONSTRAINED" not in kepler_text
 
     trappist_text = "\n".join(trappist.describe_system(TRAPPIST_EPOCH))
-    assert "0 positioned from a published epoch" in trappist_text
-    assert "7 with an assumed phase" in trappist_text
-    assert "the current position is not" in trappist_text
+    assert "ASSUMED" in trappist_text
+    assert "arbitrary starting point" in trappist_text
+    assert "PARTIALLY_CONSTRAINED" not in trappist_text
+
+
+def test_hd219134_shows_all_three_phase_statuses(catalog):
+    """The mixed system is where a binary vocabulary would lose information."""
+    from astro_explorer.physics.phase import PhaseStatus
+
+    text = "\n".join(build_slice("HD 219134", catalog).describe_system(2457000.0))
+    assert "CONSTRAINED" in text
+    assert "PARTIALLY_CONSTRAINED" in text
+    assert "ASSUMED" in text
 
 
 def test_hd219134_has_mixed_phase_provenance(catalog):
@@ -395,3 +433,68 @@ class _FakeRenderer:
         dash_period = 0.035
 
     settings = _Settings()
+
+
+# ==========================================================================
+# Review section 10: the physical clock, kept as a permanent regression
+# ==========================================================================
+
+
+#: Measured on the committed Kepler-11 snapshot. Over one period of the
+#: outermost planet, each planet completes this many revolutions. A shared
+#: normalised animation clock would make every entry 1.00.
+KEPLER11_REVOLUTIONS = {
+    "Kepler-11 b": 11.49,
+    "Kepler-11 c": 9.09,
+    "Kepler-11 d": 5.22,
+    "Kepler-11 e": 3.70,
+    "Kepler-11 f": 2.54,
+    "Kepler-11 g": 1.00,
+}
+
+
+def test_the_physical_clock_gives_each_planet_its_own_period(kepler11):
+    """Review section 10: keep this as a permanent regression test."""
+    periods = {
+        record.name: record.elements.period.value_in(u.day) for record in kepler11.planets
+    }
+    outer = max(periods.values())
+
+    for name, expected in KEPLER11_REVOLUTIONS.items():
+        assert outer / periods[name] == pytest.approx(expected, abs=0.01), name
+
+    # The innermost planet laps the outermost more than ten times over.
+    assert outer / periods["Kepler-11 b"] > 11.0
+    assert outer / periods["Kepler-11 g"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_a_normalised_clock_would_fail_that_test(kepler11):
+    """Guard the guard: show the assertion discriminates.
+
+    Under a shared normalised clock every planet completes exactly one
+    revolution per animation cycle, which is precisely what the published
+    periods must not produce.
+    """
+    periods = [r.elements.period.value_in(u.day) for r in kepler11.planets]
+    revolutions = [max(periods) / p for p in periods]
+    assert not np.allclose(revolutions, 1.0)
+    assert max(revolutions) / min(revolutions) > 11.0
+
+
+def test_propagated_positions_reproduce_those_revolution_counts(kepler11):
+    """Not just the periods - the propagator must actually advance that far."""
+    periods = {
+        record.name: record.elements.period.value_in(u.day) for record in kepler11.planets
+    }
+    outer = max(periods.values())
+    steps = 4000
+
+    for record in kepler11.planets:
+        times = KEPLER11_EPOCH + np.linspace(0.0, outer, steps + 1)
+        anomalies = np.array([kepler11.phase(record, t).mean_anomaly for t in times])
+        # Unwrap and measure the total angle swept.
+        swept = np.sum(np.mod(np.diff(anomalies) + np.pi, 2 * np.pi) - np.pi)
+        revolutions = swept / (2 * np.pi)
+        assert revolutions == pytest.approx(
+            KEPLER11_REVOLUTIONS[record.name], abs=0.02
+        ), record.name

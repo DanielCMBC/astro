@@ -110,7 +110,8 @@ python -m astro_explorer.app.system_demo --host TRAPPIST-1 --frames 8
 Six orbits cost one draw call; planets cost one instanced draw per
 (material, LOD) group. Each planet's phase provenance is tracked separately,
 so a system with published epochs and one without are never reported the
-same way. See [`docs/multi-planet.md`](docs/multi-planet.md).
+same way - and a transit epoch read through a normalised `omega` is
+reported as neither. See [`docs/multi-planet.md`](docs/multi-planet.md).
 
 ## Layout
 
@@ -130,7 +131,7 @@ src/astro_explorer/
                                scene contract, OpenGL 3.3 backend
     app/                       state and controller
     ui/                        Tkinter shell and matplotlib plots
-tests/                         481 tests
+tests/                         523 tests
 docs/                          architecture, physics, provenance, assets, roadmap status
 legacy/                        the original single-file program, preserved
 tables/                        733 NASA IPAC atmospheric spectra

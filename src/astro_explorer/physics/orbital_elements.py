@@ -34,14 +34,20 @@ from .orbital_semantics import (
     PeriastronConvention,
     resolve_argument_of_periapsis,
 )
+from .phase import PhaseProvenance, PhaseSolution, conjunction_offset_scale
 from .orientation import (
     perifocal_position,
     position_from_eccentric_anomaly,
     rotation_perifocal_to_inertial,
 )
 
+#: Julian date of the Unix epoch, the arbitrary zero used when an orbit has
+#: no published epoch of its own.
+JD_UNIX_EPOCH_DAYS = 2440587.5
+
 __all__ = [
     "PhaseKnowledge",
+    "PhaseSolution",
     "OrbitValidity",
     "PeriastronConvention",
     "OrbitalElements",
@@ -316,45 +322,97 @@ class OrbitalElements:
             return None
         return 2.0 * np.pi / period
 
-    def mean_anomaly_at(self, time_bjd: float) -> float | None:
-        """Mean anomaly at barycentric Julian date ``time_bjd``.
+    def phase_at(self, time_bjd: float, *, allow_assumed: bool = False) -> PhaseSolution:
+        """Mean anomaly at ``time_bjd``, with its full provenance.
 
-        Returns None when the phase is not constrained; the caller must then
-        either show the orbit without a planet marker or explicitly opt into
-        an assumed display phase.
+        Review section 9. The return value distinguishes a position fixed by
+        a published epoch from one whose *timing* is observed but whose
+        orbital orientation was normalised for display, from one advanced
+        from an arbitrary zero.
+
+        ``allow_assumed`` controls only the last of those: with it False, a
+        planet whose orbit has no epoch at all yields no mean anomaly.
         """
-        n = self.mean_motion_rad_per_day
-        if n is None:
-            return None
+        motion = self.mean_motion_rad_per_day
+        if motion is None:
+            return PhaseSolution(None, PhaseProvenance.UNKNOWN, note="no orbital period published")
 
+        # 1. A periastron epoch is the cleanest anchor: M = 0 at t0, and no
+        #    argument of periastron is involved at all.
         if self.epoch_periastron.is_known:
             t0 = self.epoch_periastron.value_in(u.day)
-            return float(np.mod(n * (time_bjd - t0), 2.0 * np.pi))
+            return PhaseSolution(
+                float(np.mod(motion * (time_bjd - t0), 2.0 * np.pi)),
+                PhaseProvenance.PERIASTRON_EPOCH,
+                omega_status=self.argument_of_periastron.status,
+            )
 
+        # 2. A transit epoch is an observed instant, but reading it as a
+        #    mean anomaly goes through nu = pi/2 - omega.
         if self.epoch_transit.is_known and self.eccentricity.is_known:
-            # At mid-transit the true anomaly is nu = pi/2 - omega.
-            #
-            # When omega is unpublished the display normalisation omega := 0
-            # is used, and that is not a fudge: it fixes the planet at
-            # inferior conjunction at the transit time, which is exactly what
-            # was observed. What stays unknown is the orbit's orientation
-            # *within* its plane, and that is already flagged separately.
-            omega = self.argument_of_periapsis_planet.value_in(u.rad)
-            if omega is None:
-                omega = 0.0
             from .kepler import eccentric_from_true_anomaly, mean_anomaly_from_eccentric
 
-            e = self.eccentricity.value
+            resolved = self.argument_of_periapsis_planet
+            omega = resolved.value_in(u.rad)
+            omega_known = omega is not None
+            if not omega_known:
+                omega = 0.0
+
+            eccentricity = self.eccentricity.value
             nu_transit = 0.5 * np.pi - omega
-            ecc_anom = eccentric_from_true_anomaly(nu_transit, e)
-            m_transit = mean_anomaly_from_eccentric(ecc_anom, e)
+            mean_at_transit = mean_anomaly_from_eccentric(
+                eccentric_from_true_anomaly(nu_transit, eccentricity), eccentricity
+            )
             t0 = self.epoch_transit.value_in(u.day)
-            return float(np.mod(m_transit + n * (time_bjd - t0), 2.0 * np.pi))
+            anomaly = float(np.mod(mean_at_transit + motion * (time_bjd - t0), 2.0 * np.pi))
 
+            inclination = self.inclination.value_in(u.rad, 0.5 * np.pi)
+            offset = conjunction_offset_scale(eccentricity, inclination)
+
+            return PhaseSolution(
+                anomaly,
+                PhaseProvenance.TRANSIT_EPOCH
+                if resolved.status is Status.MEASURED
+                else PhaseProvenance.TRANSIT_CONJUNCTION_NORMALIZED,
+                omega_status=resolved.status,
+                conjunction_offset=offset,
+                note=(
+                    ""
+                    if omega_known and resolved.status is Status.MEASURED
+                    else "transit time is observed; the in-plane orientation is normalised"
+                ),
+            )
+
+        # 3. A mean anomaly quoted at an epoch.
         if self.mean_anomaly_at_epoch.is_known:
-            return float(np.mod(self.mean_anomaly_at_epoch.value_in(u.rad), 2.0 * np.pi))
+            return PhaseSolution(
+                float(np.mod(self.mean_anomaly_at_epoch.value_in(u.rad), 2.0 * np.pi)),
+                PhaseProvenance.MEAN_ANOMALY_AT_EPOCH,
+                omega_status=self.argument_of_periastron.status,
+            )
 
-        return None
+        # 4. No epoch at all. The rate is physical; the zero point is not.
+        if not allow_assumed:
+            return PhaseSolution(
+                None,
+                PhaseProvenance.UNKNOWN,
+                note="no epoch published; pass allow_assumed to advance from an arbitrary zero",
+            )
+        return PhaseSolution(
+            float(np.mod(motion * (time_bjd - JD_UNIX_EPOCH_DAYS), 2.0 * np.pi)),
+            PhaseProvenance.ASSUMED_ZERO_PHASE,
+            omega_status=self.argument_of_periastron.status,
+            note="phase advances at the correct rate from an arbitrary zero",
+        )
+
+    def mean_anomaly_at(self, time_bjd: float) -> float | None:
+        """Mean anomaly at ``time_bjd``, or None when no epoch is published.
+
+        Thin wrapper over :meth:`phase_at` for callers that only want the
+        number. Anything reporting to a user should use ``phase_at`` so the
+        provenance travels with it.
+        """
+        return self.phase_at(time_bjd).mean_anomaly
 
     def describe_orientation(self) -> list[str]:
         """UI lines that state exactly what is measured (roadmap 4.3)."""

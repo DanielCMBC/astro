@@ -18,38 +18,68 @@ They were chosen because they fail differently.
 
 | System | Planets | What it exercises |
 |---|---|---|
-| **Kepler-11** | 6 | Complete: `a`, `e` and a transit epoch for every planet. All six are positioned from a published ephemeris. |
+| **Kepler-11** | 6 | `a`, `e` and a transit epoch for every planet, but no `omega`. All six are *partially* constrained: observed timing, normalised orientation. |
 | **TRAPPIST-1** | 7 | Inclinations only. No eccentricities, no epochs, **no system distance**. Everything must degrade gracefully. |
 | **HD 219134** | 6 | *Mixed* completeness - 4 planets with epochs, 2 without. The case a uniform path gets wrong. |
 
-## Phase provenance is per planet, not per system
+## Phase provenance is per planet, and three-valued
 
-A planet with a published epoch is where the ephemeris says it is. One
-without is being advanced at the correct *rate* from an arbitrary zero: a
-picture of the motion, not a claim about tonight's sky. `placements()`
-returns `(mean_anomaly, phase_is_assumed)` per planet, and the panel
-separates them:
+A binary observed/assumed split is not enough. The interesting case is
+neither: **the temporal anchor can be observed while the orbital
+orientation used to read it is not.**
+
+Kepler-11 is that case six times over. Every planet has a published
+mid-transit time - a directly observed instant - but no published `omega`,
+and converting a transit epoch to a mean anomaly goes through
+`nu = pi/2 - omega`. Calling those "positioned from a published epoch"
+overstates them; calling them "assumed" understates them.
+
+`OrbitalElements.phase_at()` returns a `PhaseSolution` carrying the whole
+story (`physics/phase.py`):
+
+| Field | Values |
+|---|---|
+| `provenance` | `PERIASTRON_EPOCH`, `TRANSIT_EPOCH`, `TRANSIT_CONJUNCTION_NORMALIZED`, `MEAN_ANOMALY_AT_EPOCH`, `ASSUMED_ZERO_PHASE`, `UNKNOWN` |
+| `anchor` | `OBSERVED`, `ASSUMED`, `NONE` |
+| `mapping` | `DIRECT`, `CONJUNCTION_NORMALIZED`, `ARBITRARY_ZERO` |
+| `omega_status` | the `Status` of the angle actually used |
+| `status` | `CONSTRAINED`, `PARTIALLY_CONSTRAINED`, `ASSUMED`, `UNKNOWN` |
+
+`status` is derived, not stored, so the rules stay in one place: a
+periastron epoch needs no `omega` at all and cannot be weakened by a
+missing one; a transit epoch read through a normalised `omega` is
+`PARTIALLY_CONSTRAINED`; a stellar-reflex conversion counts as `DERIVED`
+and is therefore still `CONSTRAINED`.
+
+The three systems land in three different places, and HD 219134 shows all
+three at once - which a uniform code path would have flattened:
 
 ```
-  6 planet(s): 6 positioned from a published epoch, 0 with an assumed phase, 0 not placed
+  6 planet(s) by phase provenance:
+     6  PARTIALLY_CONSTRAINED  timing observed, orbital orientation normalised for display
+    via TRANSIT_CONJUNCTION_NORMALIZED: published transit time, argument of
+                                        periastron normalised to 0 deg
 ```
 ```
-  7 planet(s): 0 positioned from a published epoch, 7 with an assumed phase, 0 not placed
-  An assumed phase advances the planet at the correct rate from an arbitrary
-  zero: the motion is physical, the current position is not.
+  6 planet(s) by phase provenance:
+     2  CONSTRAINED            constrained by a published epoch and orientation
+     2  PARTIALLY_CONSTRAINED  timing observed, orbital orientation normalised for display
+     2  ASSUMED                assumed: correct rate, arbitrary starting point
 ```
 
-### Transit epochs without an argument of periastron
+### The conjunction caveat
 
-Kepler-11 publishes a mid-transit time for every planet but no `omega`.
-Converting a transit epoch to a mean anomaly needs `omega`, because the true
-anomaly at mid-transit is `pi/2 - omega`.
+Inferior conjunction is *defined* by the argument of latitude
+`u = omega + nu = pi/2`, so `nu_transit = pi/2 - omega` is exact for
+conjunction - not an approximation.
 
-Rather than discard six usable epochs, the display normalisation `omega := 0`
-is used - and that is not a fudge. It places the planet at **inferior
-conjunction at the transit time**, which is exactly what was observed. What
-stays unknown is the orbit's orientation *within* its plane, which is
-already flagged as `ORIENTATION_PARTIAL`.
+What is approximate is equating conjunction with the instant of minimum
+sky-projected separation. For an eccentric, non-edge-on orbit the two
+differ by a term of order `e cos(omega) cos^2(i)`, which vanishes as
+`i -> 90 deg`. `conjunction_offset_scale()` returns an upper bound, and the
+solution reports it when non-zero. For Kepler-11 d (`e = 0.004`,
+`i = 89.6 deg`) it is below 1e-6 radians - negligible, but named rather
+than buried.
 
 `test_at_its_own_transit_time_each_planet_is_at_inferior_conjunction` checks
 all six land at `nu = 90 deg` to one part in 1e9.

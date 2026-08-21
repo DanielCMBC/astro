@@ -34,6 +34,7 @@ from ..physics.stellar import (
     luminosity_from_radius_and_teff,
 )
 from ..provenance import Parameter, measured, unknown
+from ..text import clean_text
 from .nasa_archive import SolutionPolicy
 
 __all__ = [
@@ -58,7 +59,7 @@ def clean_reference(raw: Any) -> str | None:
     if raw is None:
         return None
     text = str(raw).strip()
-    if not text or text.lower() in ("null", "nan", "none"):
+    if not clean_text(text):
         return None
     stripped = _REF_TAG.sub("", text).strip()
     return stripped or None
@@ -73,20 +74,6 @@ def reference_url(raw: Any) -> str | None:
         return None
     url = match.group(1).strip("\"'")
     return url or None
-
-
-def clean_text(value: Any) -> str:
-    """Catalogue text with the archive's null spellings removed.
-
-    A missing string column arrives from pandas as float NaN, which is
-    truthy under ``or ""`` and would print as the word "nan".
-    """
-    if value is None:
-        return ""
-    if isinstance(value, float) and math.isnan(value):
-        return ""
-    text = str(value).strip()
-    return "" if text.lower() in ("nan", "null", "none", "--") else text
 
 
 def parse_float(value: Any, default: float = math.nan) -> float:

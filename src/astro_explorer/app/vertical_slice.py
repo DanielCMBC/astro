@@ -37,6 +37,7 @@ from ..data.nasa_archive import SolutionPolicy
 from ..data.schema import PlanetRecord, StarRecord, build_planet_record
 from ..physics.ephemeris import JD_UNIX_EPOCH
 from ..physics.orbital_elements import PhaseKnowledge
+from ..physics.phase import PhaseSolution, PhaseStatus
 from ..physics.state_vectors import (
     StateVector,
     expected_specific_energy,
@@ -127,21 +128,18 @@ class SystemSlice:
         return next((p for p in self.planets if p.name == name), None)
 
     # -- propagation ------------------------------------------------------
-    def mean_anomaly(self, record: PlanetRecord, time_bjd: float) -> tuple[float | None, bool]:
-        """``(M, phase_is_assumed)`` for a planet at a barycentric Julian date.
+    def phase(self, record: PlanetRecord, time_bjd: float) -> PhaseSolution:
+        """Full phase provenance for a planet (review section 9).
 
-        Returns ``(None, True)`` when the orbit has no epoch at all, so the
-        caller draws the path without placing a body on it.
+        Assumed phases are permitted here because the system view draws
+        them; what matters is that the returned solution says so.
         """
-        anomaly = record.elements.mean_anomaly_at(time_bjd)
-        if anomaly is not None:
-            return anomaly, not record.elements.can_compute_current_position
+        return record.elements.phase_at(time_bjd, allow_assumed=True)
 
-        motion = record.elements.mean_motion_rad_per_day
-        if motion is None:
-            return None, True
-        # The rate is physical even when the absolute phase is not.
-        return float(np.mod(motion * (time_bjd - JD_UNIX_EPOCH), 2.0 * np.pi)), True
+    def mean_anomaly(self, record: PlanetRecord, time_bjd: float) -> tuple[float | None, bool]:
+        """``(M, phase_is_assumed)`` - the compact form of :meth:`phase`."""
+        solution = self.phase(record, time_bjd)
+        return solution.mean_anomaly, solution.is_assumed
 
     def placements(self, time_bjd: float) -> dict[str, tuple[float, bool]]:
         """``name -> (mean anomaly, phase_is_assumed)`` for every placeable planet.
@@ -153,21 +151,30 @@ class SystemSlice:
         """
         found: dict[str, tuple[float, bool]] = {}
         for record in self.planets:
-            anomaly, assumed = self.mean_anomaly(record, time_bjd)
-            if anomaly is not None:
-                found[record.name] = (anomaly, assumed)
+            solution = self.phase(record, time_bjd)
+            if solution.is_placeable:
+                found[record.name] = (solution.mean_anomaly, solution.is_assumed)
         return found
+
+    def phase_solutions(self, time_bjd: float) -> dict[str, PhaseSolution]:
+        """Full phase provenance per planet."""
+        return {record.name: self.phase(record, time_bjd) for record in self.planets}
 
     def mean_anomalies(self, time_bjd: float, *, include_assumed: bool = True) -> dict[str, float]:
         """Mean anomalies for every planet whose phase can be drawn.
 
-        Pass ``include_assumed=False`` to place only planets whose phase is
-        constrained by a published epoch.
+        ``include_assumed=False`` keeps every planet whose *timing* was
+        observed - fully constrained or conjunction-normalised - and drops
+        only those advanced from an arbitrary zero. A transit epoch is a
+        real observation even when the orientation it is read through is
+        normalised.
         """
+        solutions = self.phase_solutions(time_bjd)
         return {
-            name: anomaly
-            for name, (anomaly, assumed) in self.placements(time_bjd).items()
-            if include_assumed or not assumed
+            name: solution.mean_anomaly
+            for name, solution in solutions.items()
+            if solution.is_placeable
+            and (include_assumed or solution.status.is_observationally_anchored)
         }
 
     def state(self, record: PlanetRecord, time_bjd: float) -> StateVector | None:
@@ -178,7 +185,8 @@ class SystemSlice:
         display-normalised elements so an unknown node is a documented zero
         rather than an omission.
         """
-        anomaly, _assumed = self.mean_anomaly(record, time_bjd)
+        solution = self.phase(record, time_bjd)
+        anomaly = solution.mean_anomaly
         if anomaly is None or not record.elements.semimajor_axis.is_known:
             return None
 
@@ -375,23 +383,37 @@ class SystemSlice:
                 )
             )
 
-        placements = self.placements(time_bjd)
-        from_ephemeris = sum(1 for _a, assumed in placements.values() if not assumed)
-        assumed_phase = len(placements) - from_ephemeris
-        not_drawn = len(self.planets) - len(placements)
+        solutions = self.phase_solutions(time_bjd)
+        tally = {status: 0 for status in PhaseStatus}
+        for solution in solutions.values():
+            tally[solution.status] += 1
 
-        lines += [
-            "",
-            "  {0} planet(s): {1} positioned from a published epoch, {2} with an "
-            "assumed phase, {3} not placed".format(
-                len(self.planets), from_ephemeris, assumed_phase, not_drawn
-            ),
-        ]
-        if assumed_phase:
-            lines.append(
-                "  An assumed phase advances the planet at the correct rate from an "
-                "arbitrary zero: the motion is physical, the current position is not."
-            )
+        lines += ["", "  {0} planet(s) by phase provenance:".format(len(self.planets))]
+        for status in (
+            PhaseStatus.CONSTRAINED,
+            PhaseStatus.PARTIALLY_CONSTRAINED,
+            PhaseStatus.ASSUMED,
+            PhaseStatus.UNKNOWN,
+        ):
+            if tally[status]:
+                lines.append(
+                    "    {0:>2}  {1:<22} {2}".format(
+                        tally[status], status.value, status.label
+                    )
+                )
+
+        # Name the specific mapping wherever it is not the trivial one, so
+        # "partially constrained" is never left as a bare adjective.
+        mappings = sorted(
+            {
+                solution.provenance
+                for solution in solutions.values()
+                if solution.status is PhaseStatus.PARTIALLY_CONSTRAINED
+            },
+            key=lambda item: item.value,
+        )
+        for provenance in mappings:
+            lines.append("    via {0}: {1}".format(provenance.value, provenance.label))
         unknown_nodes = sum(
             1 for r in self.planets if not r.elements.longitude_of_ascending_node.is_known
         )

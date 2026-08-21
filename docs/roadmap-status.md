@@ -120,6 +120,20 @@ Review section 6 (physical vs display radius) is enforced by
 | display-scale disclosure | done - per-system factors in the header |
 | provenance-aware orbital fields | done - review section 14 pass |
 
+## Review sections 8-11 - phase vocabulary refinement
+
+The one item the multi-planet review held back before the GitHub replay.
+
+| Task | Where |
+|---|---|
+| `PhaseProvenance` enum | `physics/phase.py` |
+| observed anchor vs assumed | `PhaseAnchor` |
+| anomaly mapping recorded | `AnomalyMapping.CONJUNCTION_NORMALIZED` |
+| three-valued phase status | `PhaseStatus` |
+| conjunction caveat quantified | `conjunction_offset_scale` |
+| physical clock kept as a regression | `test_the_physical_clock_gives_each_planet_its_own_period` |
+| NaN / missing-string boundary utility | `astro_explorer/text.py` |
+
 ## Formula reference coverage
 
 `ORBITAL_MECHANICS_FORMULAS_3D_EXOPLANET.md`, section by section.
