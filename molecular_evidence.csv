@@ -1,0 +1,35 @@
+# Molecular detection evidence (roadmap section 3.12).
+#
+# This table replaces the flat planet_molecules.csv "planet, molecule, url"
+# list. Every row records how strong the published evidence actually is, so
+# the application can avoid presenting a tentative or disputed claim as an
+# established detection.
+#
+# detection_status: DETECTED | TENTATIVE | UPPER_LIMIT | NOT_DETECTED | DISPUTED | UNKNOWN
+# confidence:       free text, ideally the significance quoted by the authors
+# date:             publication year of the cited analysis
+#
+# Rows are a curated starting set, not an exhaustive survey of the literature.
+planet,molecule,detection_status,instrument,facility,publication,reference_url,retrieval_method,confidence,date,notes
+WASP-39 b,CO2 (Carbon Dioxide),DETECTED,NIRSpec PRISM,JWST,JWST Transiting Exoplanet Community ERS Team 2023,https://ui.adsabs.harvard.edu/abs/2023Natur.614..649J/abstract,transmission spectroscopy,~26 sigma,2023,First unambiguous CO2 detection in an exoplanet atmosphere.
+WASP-39 b,H2O (Water),DETECTED,NIRSpec / NIRISS,JWST,Ahrer et al. 2023; Rustamkulov et al. 2023,https://ui.adsabs.harvard.edu/abs/2023Natur.614..653A/abstract,transmission spectroscopy,robust,2023,Seen consistently across multiple JWST instrument modes.
+WASP-39 b,CO (Carbon Monoxide),DETECTED,NIRSpec G395H,JWST,Alderson et al. 2023,https://ui.adsabs.harvard.edu/abs/2023Natur.614..664A/abstract,transmission spectroscopy,robust,2023,
+WASP-39 b,SO2 (Sulfur Dioxide),DETECTED,NIRSpec PRISM,JWST,Tsai et al. 2023,https://ui.adsabs.harvard.edu/abs/2023Natur.617..483T/abstract,transmission spectroscopy + photochemical modelling,robust,2023,Interpreted as a photochemical product; the identification depends on the model.
+WASP-39 b,Na (Sodium),DETECTED,NIRSpec PRISM,JWST,Rustamkulov et al. 2023,https://ui.adsabs.harvard.edu/abs/2023Natur.614..659R/abstract,transmission spectroscopy,robust,2023,
+WASP-96 b,H2O (Water),DETECTED,NIRISS SOSS,JWST,JWST Early Release Observations 2022,https://ui.adsabs.harvard.edu/abs/2023ApJ...951L..49R/abstract,transmission spectroscopy,robust,2022,
+WASP-96 b,Na (Sodium),DETECTED,FORS2,VLT,Nikolov et al. 2018,https://ui.adsabs.harvard.edu/abs/2018Natur.557..526N/abstract,transmission spectroscopy,robust,2018,Complete, pressure-broadened sodium line profile.
+K2-18 b,CH4 (Methane),DETECTED,NIRISS SOSS / NIRSpec G395H,JWST,Madhusudhan et al. 2023,https://ui.adsabs.harvard.edu/abs/2023ApJ...956L..13M/abstract,atmospheric retrieval,~5 sigma,2023,
+K2-18 b,CO2 (Carbon Dioxide),DETECTED,NIRISS SOSS / NIRSpec G395H,JWST,Madhusudhan et al. 2023,https://ui.adsabs.harvard.edu/abs/2023ApJ...956L..13M/abstract,atmospheric retrieval,~3 sigma,2023,
+K2-18 b,DMS (Dimethyl Sulfide),DISPUTED,NIRSpec G395H / MIRI,JWST,Madhusudhan et al. 2023 and 2025; independent reanalyses,https://ui.adsabs.harvard.edu/abs/2023ApJ...956L..13M/abstract,atmospheric retrieval,below 3 sigma in reanalyses,2025,Reported tentatively and not confirmed by independent reanalysis; must not be presented as a biosignature.
+K2-18 b,H2O (Water),DISPUTED,WFC3,HST,Benneke et al. 2019; Tsiaras et al. 2019,https://ui.adsabs.harvard.edu/abs/2019ApJ...887L..14B/abstract,transmission spectroscopy,superseded,2019,The HST feature is now generally attributed to methane rather than water.
+HD 209458 b,Na (Sodium),DETECTED,STIS,HST,Charbonneau et al. 2002,https://ui.adsabs.harvard.edu/abs/2002ApJ...568..377C/abstract,transmission spectroscopy,robust,2002,First detection of an exoplanet atmosphere.
+HD 209458 b,H2O (Water),DETECTED,WFC3,HST,Deming et al. 2013,https://ui.adsabs.harvard.edu/abs/2013ApJ...774...95D/abstract,transmission spectroscopy,robust,2013,
+HD 189733 b,H2O (Water),DETECTED,WFC3,HST,McCullough et al. 2014,https://ui.adsabs.harvard.edu/abs/2014ApJ...791...55M/abstract,transmission spectroscopy,robust,2014,
+HD 189733 b,Na (Sodium),DETECTED,HIRES,Keck,Redfield et al. 2008,https://ui.adsabs.harvard.edu/abs/2008ApJ...673L..87R/abstract,transmission spectroscopy,robust,2008,
+WASP-43 b,H2O (Water),DETECTED,MIRI LRS,JWST,Bell et al. 2024,https://ui.adsabs.harvard.edu/abs/2024NatAs...8..879B/abstract,phase-curve spectroscopy,robust,2024,
+WASP-43 b,CH4 (Methane),UPPER_LIMIT,MIRI LRS,JWST,Bell et al. 2024,https://ui.adsabs.harvard.edu/abs/2024NatAs...8..879B/abstract,phase-curve spectroscopy,non-detection,2024,The nightside methane abundance is constrained to be low, implying strong vertical mixing.
+WASP-121 b,H2O (Water),DETECTED,WFC3,HST,Evans et al. 2016,https://ui.adsabs.harvard.edu/abs/2016ApJ...822L...4E/abstract,emission spectroscopy,robust,2016,
+TRAPPIST-1 b,CO2 (Carbon Dioxide),NOT_DETECTED,MIRI,JWST,Greene et al. 2023,https://ui.adsabs.harvard.edu/abs/2023Natur.618...39G/abstract,secondary-eclipse photometry,non-detection,2023,Dayside brightness temperature is consistent with a bare rock and no thick atmosphere.
+LHS 475 b,CO2 (Carbon Dioxide),NOT_DETECTED,NIRSpec G395H,JWST,Lustig-Yaeger et al. 2023,https://ui.adsabs.harvard.edu/abs/2023ApJ...948L..11L/abstract,transmission spectroscopy,non-detection,2023,A cloud-free hydrogen-dominated atmosphere is ruled out; a thin atmosphere is not.
+55 Cnc e,CO2 (Carbon Dioxide),TENTATIVE,NIRCam / MIRI,JWST,Hu et al. 2024,https://ui.adsabs.harvard.edu/abs/2024Natur.630..609H/abstract,secondary-eclipse spectroscopy,tentative,2024,A volatile-rich secondary atmosphere is favoured but not established; CO2 and CO cannot be separated.
+GJ 1214 b,CH4 (Methane),UPPER_LIMIT,MIRI LRS,JWST,Kempton et al. 2023,https://ui.adsabs.harvard.edu/abs/2023Natur.620...67K/abstract,phase-curve spectroscopy,non-detection,2023,A high-metallicity, highly reflective aerosol layer mutes all molecular features.

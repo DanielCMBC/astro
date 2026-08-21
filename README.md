@@ -1,81 +1,173 @@
-3D Exoplanet System Navigator
-This is an interactive 3D celestial map that allows you to explore all known star systems that host exoplanets. The application uses real astronomical data from the Gaia mission, the NASA Exoplanet Archive, and the SIMBAD database to provide a scientifically accurate and recognizable representation of these fascinating systems.
+# Exoplanet Scientific Suite
 
-When you fly close to a star, you will see a real-time, animated 3D representation of its planetary system, complete with textured planets and orbit lines.
+An offline-first exoplanet scientific explorer: catalogue-accurate data,
+orbital mechanics, stellar physics, spectroscopy and explicit provenance.
 
-Features
-Exoplanet-Focused Universe: The map exclusively displays stars confirmed to host exoplanets, allowing for a focused exploration of known planetary systems like 51 Eridani and TRAPPIST-1.
+This branch holds the **corrected 2D scientific baseline** plus the reusable
+scientific core that the 3D/OpenGL engine is meant to build on, following
+`EXOPLANET_2D_FIXES_AND_3D_OPENGL_ROADMAP.md`.
 
-Common Star Names: Fetches recognizable star names from the SIMBAD database instead of just catalog numbers.
+## The one rule
 
-Animated 3D Planetary Systems: As you approach a host star, its planets appear as sprites and begin to orbit in real-time along 3D paths.
+Every scientific value carries its status:
 
-"Google Earth" Style Zoom: Fly even closer to a planet, and its 2D sprite will seamlessly transition into a detailed, textured 3D sphere.
+```
+MEASURED                    published in a catalogue or paper
+DERIVED                     computed here by a documented relation
+ASSUMED_FOR_VISUALIZATION   a placeholder so something could be drawn
+UNKNOWN                     not known, and not substituted
+```
 
-Interactive Camera: Fly through the galaxy with intuitive mouse and keyboard controls (WASD, mouse drag, scroll wheel).
+A missing semimajor axis is derived from Kepler's third law or left unknown;
+it never becomes 1 AU. A missing eccentricity stays unknown; the circular
+orbit you see is labelled as an assumption. An unusable parallax stays
+unknown; it never becomes a placeholder distance.
 
-Ray-Cast Selection: Click on any star to select it and bring up a detailed information panel.
+## The 3D prototype
 
-Fully Functional Data Panel:
+`stellar_navigator_3d.py` is the original Pygame + PyOpenGL prototype that
+gave this branch its name: a flyable 3D map of exoplanet host stars built on
+Gaia, SIMBAD and the NASA archive.
 
-Details: Shows key data like the star's common name, distance, temperature, luminosity, and a list of its known planets.
+It still runs, and its own documentation is preserved at
+[`docs/legacy-3d-prototype.md`](docs/legacy-3d-prototype.md).
 
-Orbit Viewer: Displays a top-down 2D plot of the planetary system's orbits.
+It is not the foundation being extended. The roadmap is explicit that it
+should be progressively replaced by the modular core below, and the defects
+it demonstrates - a first-order Kepler approximation, a `0.005` AU-to-parsec
+scale factor, coplanar `[x, y, 0]` orbits, fixed-function OpenGL, invented
+missing-data defaults - are each fixed and regression-tested here. See
+[`docs/roadmap-status.md`](docs/roadmap-status.md) for the item-by-item map.
 
-HR Diagram: Plots the selected star on a Hertzsprung-Russell diagram of all other exoplanet hosts.
+## Setup
 
-Spectrum: Shows the star's theoretical black-body radiation curve.
+```bash
+conda create --name astrodata python=3.11
+conda activate astrodata
+pip install -e .
+```
 
-Sky View: Fetches and displays real astronomical images of the star from professional sky surveys (Pan-STARRS and DSS).
+Optional extras:
 
-Data Caching: Fetched data is cached locally for much faster startup times on subsequent runs.
+```bash
+pip install -e ".[render]"     # ModernGL + pygame, for the 3D engine
+pip install -e ".[dynamics]"   # REBOUND, for the optional N-body mode
+pip install -e ".[ui]"         # PySide6 + pyqtgraph
+pip install -e ".[dev]"        # pytest
+```
 
-Multi-Threaded Data Fetching: Sky survey images and star names are loaded in the background to keep the UI responsive.
+Windows users can run `dependencies.bat`, which wraps the same install.
 
-Setup and Installation
-This project uses Python and several external libraries. The following steps will guide you through setting up a dedicated environment using Anaconda/Miniconda.
+## Run
 
-1. Prerequisites
-Anaconda or Miniconda: You must have a working installation. You can download Miniconda here.
+```bash
+python exoplanet_analyzer.py
+```
 
-2. Create the Conda Environment
-Open your terminal (Anaconda Prompt on Windows, or your default terminal on macOS/Linux) and run the following commands:
+or, after installing, `astro-explorer-2d`.
 
-# Create a new conda environment named 'astro3d' with Python 3.9
-conda create --name astro3d python=3.9 -y
+The application reads from a validated local snapshot and refreshes in the
+background. With no network it stays fully usable; a failed synchronisation
+never disturbs the working snapshot.
 
-# Activate the new environment
-conda activate astro3d
+## Tabs
 
-3. Install Dependencies
-With the astro3d environment active, run the following command in your terminal to install all required libraries:
+| Tab | Shows |
+|---|---|
+| Overview | parameters with their status, classification, Kepler-3 residual, distance |
+| Orbit | physical-time animation; an assumed orbit is dashed and explained |
+| HR Diagram | luminosity against effective temperature |
+| Temperature-Radius | the original program's plot, under its correct name |
+| Black Body | Planck curve and Wien peak, labelled an ideal approximation |
+| Atmospheric Spectra | one series per measurement, named by instrument and paper |
+| Molecular Evidence | detections grouped by how strong the evidence actually is |
+| Data & Provenance | source, solution policy, snapshot version, resource paths |
 
-pip install pygame PyOpenGL numpy pandas astroquery tenacity pyarrow astropy Pillow
+## The 3D vertical slice
 
-4. Running the Application
-Once the environment is set up and the dependencies are installed:
+One host system, correct at every stage from the local snapshot to the
+pixels. The reference target is **HD 80606 b** (`e = 0.93183`), chosen
+because an extreme eccentricity exposes orbital errors that a near-circular
+orbit hides.
 
-Make sure your astro3d conda environment is active.
+```bash
+python -m astro_explorer.app.slice_demo            # report + render
+python -m astro_explorer.app.slice_demo --no-render # report only
+```
 
-Navigate to the project directory in your terminal.
+Verified against independently derivable values: `|r|` at periastron equals
+`a(1-e)` to 1e-9, periapsis speed 239.925 km/s matches
+`sqrt(mu(1+e)/(a(1-e)))`, and the specific orbital energy matches `-mu/2a`
+to a relative 1.9e-15. See [`docs/vertical-slice.md`](docs/vertical-slice.md).
 
-Run the main Python script:
+## Layout
 
-python stellar_navigator_3d.py
+```
+exoplanet_analyzer.py          launcher
+src/astro_explorer/
+    provenance.py              Parameter and Status
+    physics/                   constants, Kepler, orientation, state vectors,
+                               elements, ephemeris, stellar, radiation
+    coordinates/               ICRS/Galactic frames, unit bridges,
+                               Universe/System/Planet frames, floating origin
+    spectroscopy/              IPAC reader, Spectrum, molecular evidence
+    classification/            conventional scheme + draft physical vector
+    data/                      catalogue queries, schema, validation, local store
+    assets/                    resource manager, provenance manifest, procedural materials
+    rendering/                 meshes, camera, GLSL shaders, picking,
+                               scene contract, OpenGL 3.3 backend
+    app/                       state and controller
+    ui/                        Tkinter shell and matplotlib plots
+tests/                         374 tests
+docs/                          architecture, physics, provenance, assets, roadmap status
+legacy/                        the original single-file program, preserved
+tables/                        733 NASA IPAC atmospheric spectra
+molecular_evidence.csv         detection evidence with provenance
+```
 
-Note on First Run: The very first time you launch, it may take several minutes to download and cross-match the exoplanet and Gaia catalogs. This is a complex, one-time process. The application will create .feather cache files in the directory, and all subsequent launches will be much faster.
+## Data notes
 
-How to Use
-Navigate:
+* Planet and system parameters come from the NASA Exoplanet Archive. The
+  record-selection policy is explicit: `pscomppars` is maximally populated
+  but mixes references across columns, while `ps` filtered to
+  `default_flag = 1` gives one self-consistent published solution. The
+  active policy is shown in the Data tab.
+* Atmospheric spectra are read from `tables/*.tbl` with
+  `astropy.table.Table.read(..., format="ascii.ipac")`, addressing columns by
+  name: `CENTRALWAVELNG` is the wavelength, `PL_TRANDEP` the transit depth,
+  `BANDWIDTH` the band width (an x error bar, not the signal), and
+  `PL_TRANDEPERR1`/`PL_TRANDEPERR2` the asymmetric uncertainties.
+* Spectra from different instruments, facilities, epochs or publications are
+  never merged.
+* Textures and colours generated from physical parameters are labelled
+  "actual appearance unknown". No exoplanet surface has been imaged.
 
-Look Around: Click and drag the left mouse button.
+## Tests
 
-Pan: Use the W, A, S, D keys.
+```bash
+pytest
+```
 
-Zoom: Use the mouse scroll wheel.
+Beyond the physics, the suite enforces the architecture: the renderer may
+not import the data layer, render primitives may not carry scientific
+fields, no module outside `constants.py` may hard-code a physical constant,
+and the incorrect AU-to-parsec factor may not reappear.
 
-Select a Star: Left-click on any point of light.
+## Build
 
-View an Animated System: Fly close (within ~3 parsecs) to any star. The planets will automatically appear and begin to orbit. Zoom closer to an individual planet to see it transition into a 3D sphere.
+```bash
+pyinstaller exoplanet_analyzer.spec
+```
 
-Explore Data: The panel on the right will update with the selected star's data. Click the different tabs to explore all the available visualizations and information.
+The spec generates its data files from `DECLARED_RESOURCES`, so declaring a
+resource in `assets/manager.py` is enough to get it bundled.
+
+## Further reading
+
+* [`docs/vertical-slice.md`](docs/vertical-slice.md)
+* [`docs/architecture.md`](docs/architecture.md)
+* [`docs/physics.md`](docs/physics.md)
+* [`docs/data-provenance.md`](docs/data-provenance.md)
+* [`docs/assets.md`](docs/assets.md)
+* [`docs/original-2d-behaviour.md`](docs/original-2d-behaviour.md)
+* [`docs/roadmap-status.md`](docs/roadmap-status.md)

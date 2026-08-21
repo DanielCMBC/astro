@@ -1,0 +1,19 @@
+# Runtime dependencies for the corrected 2D application.
+#
+# pyproject.toml is the authoritative source (roadmap section 3.10); this
+# file is kept for `pip install -r requirements.txt` convenience and must
+# stay in step with the [project].dependencies table there.
+#
+# For the 3D engine, N-body dynamics or the Qt UI, install the extras:
+#   pip install -e ".[render]"     moderngl + pygame
+#   pip install -e ".[dynamics]"   REBOUND
+#   pip install -e ".[ui]"         PySide6 + pyqtgraph
+#   pip install -e ".[dev]"        pytest
+
+numpy>=1.26
+scipy>=1.11
+astropy>=6.0
+pandas>=2.1
+pyarrow>=14.0
+requests>=2.31
+matplotlib>=3.8

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astro-explorer"
+version = "0.2.1"
+description = "Offline-first 3D exoplanet scientific explorer and educational workstation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "DanielCMBC" }]
+keywords = ["astronomy", "exoplanets", "orbital-mechanics", "spectroscopy", "opengl"]
+
+# Scientific/data layer (roadmap section 7). These are required for the
+# corrected 2D baseline and for the scientific core the 3D engine consumes.
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "astropy>=6.0",
+    "pandas>=2.1",
+    "pyarrow>=14.0",
+    "requests>=2.31",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# Catalog synchronisation against remote services.
+sync = ["astroquery>=0.4.7"]
+# Modern core-profile OpenGL renderer (roadmap section 4.8).
+render = ["moderngl>=5.8", "pygame>=2.5"]
+# Optional N-body dynamics mode (roadmap section 17).
+dynamics = ["rebound>=4.0"]
+# Long-term scientific workstation UI (roadmap section 7).
+ui = ["PySide6>=6.6", "pyqtgraph>=0.13"]
+dev = ["pytest>=8.0", "pytest-cov>=4.1"]
+build = ["pyinstaller>=6.3"]
+all = [
+    "astroquery>=0.4.7",
+    "moderngl>=5.8",
+    "pygame>=2.5",
+    "rebound>=4.0",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+astro-explorer-2d = "astro_explorer.app.main:main"
+
+[project.urls]
+Homepage = "https://github.com/DanielCMBC/astro"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"astro_explorer.rendering" = ["shaders/*.vert", "shaders/*.frag"]
+"astro_explorer.assets" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

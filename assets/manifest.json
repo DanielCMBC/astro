@@ -1,0 +1,25 @@
+{
+  "schema": {
+    "description": "Visual provenance manifest (roadmap section 16). Every texture, concept image or thumbnail the renderer may display must be declared here first, so the UI can show what the image actually is.",
+    "fields": {
+      "asset_id": "stable identifier referenced by material code",
+      "relative_path": "path relative to the project root",
+      "asset_type": "OBSERVED | NASA_CONCEPT | SCIENTIFIC_PROCEDURAL | GENERIC_CLASS",
+      "planet_name": "the body this asset depicts, if any",
+      "source_url": "where it came from",
+      "creator": "who made it",
+      "credit": "the credit line the UI must display",
+      "license": "licence or provenance status",
+      "retrieved": "ISO date the file entered the repository",
+      "sha256": "integrity hash, verified by AssetManifest.verify_all"
+    },
+    "badges": {
+      "OBSERVED": "Observed imagery",
+      "NASA_CONCEPT": "NASA artist concept - not a photograph",
+      "SCIENTIFIC_PROCEDURAL": "Procedural visualisation - actual appearance unknown",
+      "GENERIC_CLASS": "Generic class placeholder - not a depiction of this planet"
+    },
+    "note": "No exoplanet surface has ever been imaged. An asset may only be declared OBSERVED for a solar-system body or a directly imaged disc, never for an exoplanet surface."
+  },
+  "assets": []
+}
