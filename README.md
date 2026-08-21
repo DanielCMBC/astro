@@ -118,7 +118,7 @@ src/astro_explorer/
                                scene contract, OpenGL 3.3 backend
     app/                       state and controller
     ui/                        Tkinter shell and matplotlib plots
-tests/                         374 tests
+tests/                         444 tests
 docs/                          architecture, physics, provenance, assets, roadmap status
 legacy/                        the original single-file program, preserved
 tables/                        733 NASA IPAC atmospheric spectra
@@ -165,6 +165,7 @@ resource in `assets/manager.py` is enough to get it bundled.
 ## Further reading
 
 * [`docs/vertical-slice.md`](docs/vertical-slice.md)
+* [`docs/orbital-semantics.md`](docs/orbital-semantics.md)
 * [`docs/architecture.md`](docs/architecture.md)
 * [`docs/physics.md`](docs/physics.md)
 * [`docs/data-provenance.md`](docs/data-provenance.md)

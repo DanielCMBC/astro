@@ -366,3 +366,153 @@ def test_a_circular_assumption_gives_a_constant_radius(catalog):
     times = 2455343.0 + np.linspace(0.0, 4.055, 50)
     radii = [float(other.state(record, t).radius) for t in times]
     assert np.allclose(radii, radii[0], rtol=1e-9)
+
+
+# ==========================================================================
+# Orbital semantics on the real snapshot (review sections 9-11)
+# ==========================================================================
+
+
+def test_the_raw_argument_of_periastron_is_preserved(planet):
+    """Task 1: the catalogued value survives untouched."""
+    from astro_explorer.provenance import Status as S
+
+    raw = planet.elements.argument_of_periastron
+    assert raw.value_in(u.deg) == pytest.approx(ARG_PERIAPSIS_DEG)
+    assert raw.status is S.MEASURED
+    assert "pl_orblper" in raw.provenance
+
+
+def test_the_convention_is_recorded_as_unstated(planet):
+    """Task 2: the archive does not say, so neither do we."""
+    from astro_explorer.physics.orbital_semantics import PeriastronConvention
+
+    assert planet.elements.periastron_convention is PeriastronConvention.AS_REPORTED
+    assert not planet.elements.periastron_convention.is_determinate
+    assert planet.elements.periastron_convention_is_assumed
+
+
+def test_the_resolved_angle_is_flagged_as_an_assumption(planet):
+    """Using the raw value as the planet's omega is a choice, not a fact."""
+    resolved = planet.elements.argument_of_periapsis_planet
+    assert resolved.status is Status.ASSUMED_FOR_VISUALIZATION
+    assert not resolved.is_scientific
+    # Same direction as the raw value, just wrapped.
+    from astro_explorer.physics.orbital_semantics import angular_difference
+
+    assert angular_difference(
+        resolved.value_in(u.rad), planet.elements.argument_of_periastron.value_in(u.rad)
+    ) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_publication_is_preserved_on_the_elements(planet):
+    """Task 3: the reference travels with the orbit, not only the record."""
+    assert planet.elements.reference is not None
+    assert "Pearson" in planet.elements.reference
+    # ...and the raw HTML anchor never reaches a caller.
+    assert "<" not in planet.elements.reference
+
+
+def test_the_reference_url_is_kept(planet):
+    url = planet.extra.get("reference_url")
+    assert url and url.startswith("https://")
+    assert "2022AJ" in url
+
+
+def test_the_periastron_epoch_is_present(planet):
+    """Task 4: pl_orbtper is what makes the phase real."""
+    from astro_explorer.physics.epoch import EpochKind
+
+    kinds = {epoch.kind for epoch in planet.elements.epochs}
+    assert EpochKind.PERIASTRON in kinds
+    assert planet.elements.epoch_periastron.value_in(u.day) == pytest.approx(T_PERIASTRON)
+
+
+def test_the_epoch_time_system_is_recorded_as_unstated(planet):
+    """Task 5: a Julian date with no stated scale says so."""
+    from astro_explorer.physics.epoch import TimeScale
+
+    assert planet.elements.epoch_scale is TimeScale.JD_UNSPECIFIED
+    assert not planet.elements.epoch_scale.is_determinate
+    for epoch in planet.elements.epochs:
+        assert "not stated" in epoch.describe()
+
+
+def test_the_time_system_ambiguity_is_negligible_here(planet):
+    """Stated honestly, and shown to be irrelevant on a 111-day orbit."""
+    epoch = planet.elements.epochs[0]
+    fraction = epoch.phase_uncertainty_fraction(PERIOD_DAYS)
+    assert fraction < 1e-4
+
+
+def test_geometry_and_phase_validity_are_distinguished(planet):
+    """Tasks 6 and 7."""
+    from astro_explorer.physics.orbital_semantics import OrbitValidity
+
+    validity = planet.elements.validity
+    assert OrbitValidity.GEOMETRY_VALID in validity
+    assert OrbitValidity.PHASE_VALID in validity
+    assert OrbitValidity.ORIENTATION_PARTIAL in validity
+    assert OrbitValidity.ORIENTATION_FULL not in validity
+
+
+def test_wasp39b_is_geometry_valid_but_not_phase_valid(catalog):
+    """The contrast case: a shape with no usable epoch of its own kind."""
+    from astro_explorer.physics.orbital_semantics import OrbitValidity
+
+    other = build_slice("WASP-39", catalog)
+    elements = other.planet("WASP-39 b").elements
+    validity = elements.validity
+    # No published eccentricity, so the shape itself is not fully measured.
+    assert OrbitValidity.GEOMETRY_VALID not in validity
+    assert OrbitValidity.ORIENTATION_PARTIAL in validity
+
+
+def test_the_report_states_the_convention_and_its_consequence(slice_, planet):
+    """Task 10: the assumption is visible, not buried."""
+    text = "\n".join(slice_.describe_orbit(planet, T_PERIASTRON))
+    assert "raw, as catalogued" in text
+    assert "convention not stated" in text
+    assert "180 degrees" in text
+    assert "ORBIT VALIDITY" in text
+    assert "GEOMETRY_VALID" in text
+    assert "PHASE_VALID" in text
+    assert "time of periastron passage" in text
+    assert "Pearson" in text
+
+
+def test_a_stellar_reflex_reading_would_move_periapsis_across_the_star(slice_, planet):
+    """Why the convention matters, measured on the real orbit.
+
+    If Pearson et al. had reported the stellar reflex orbit, periapsis would
+    sit on the opposite side. The separation between the two readings is
+    twice the periapsis distance.
+    """
+    import numpy as np
+
+    from astro_explorer.physics.orbital_semantics import (
+        PeriastronConvention,
+        stellar_reflex_to_planet,
+    )
+    from astro_explorer.physics.state_vectors import state_at_mean_anomaly
+
+    elements = planet.elements
+    common = dict(
+        semimajor_axis=elements.semimajor_axis.value_in(u.au),
+        eccentricity=elements.eccentricity.value,
+        inclination=elements.inclination.value_in(u.rad),
+        longitude_of_ascending_node=0.0,
+        mu=slice_.mu,
+    )
+    omega = elements.argument_of_periastron.value_in(u.rad)
+
+    as_reported = state_at_mean_anomaly(
+        mean_anomaly=0.0, argument_of_periapsis=omega, **common
+    )
+    as_reflex = state_at_mean_anomaly(
+        mean_anomaly=0.0, argument_of_periapsis=stellar_reflex_to_planet(omega), **common
+    )
+
+    assert np.allclose(as_reported.position, -as_reflex.position, atol=1e-12)
+    separation = np.linalg.norm(as_reported.position - as_reflex.position)
+    assert separation == pytest.approx(2 * A_AU * (1 - ECC), rel=1e-9)

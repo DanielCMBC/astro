@@ -14,6 +14,7 @@ Every field records which catalogue column it came from.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping
@@ -23,7 +24,9 @@ import numpy as np
 
 from ..coordinates.frames import SkyPosition, sky_position
 from ..physics.ephemeris import kepler_third_law_residual, semimajor_axis_from_period
+from ..physics.epoch import TimeScale
 from ..physics.orbital_elements import OrbitalElements
+from ..physics.orbital_semantics import PeriastronConvention
 from ..physics.stellar import (
     equilibrium_temperature,
     habitable_zone_au,
@@ -34,6 +37,34 @@ from ..provenance import Parameter, measured, unknown
 from .nasa_archive import SolutionPolicy
 
 __all__ = ["StarRecord", "PlanetRecord", "parse_float", "build_planet_record"]
+
+
+#: The archive wraps references in an HTML anchor.  Both the display name
+#: and the ADS link are worth keeping; neither is worth showing raw.
+_REF_TAG = re.compile(r"<[^>]*>")
+_REF_HREF = re.compile(r"href\s*=\s*([^\s>]+)")
+
+
+def clean_reference(raw: Any) -> str | None:
+    """Human-readable citation from the archive's ``*_refname`` markup."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() in ("null", "nan", "none"):
+        return None
+    stripped = _REF_TAG.sub("", text).strip()
+    return stripped or None
+
+
+def reference_url(raw: Any) -> str | None:
+    """The ADS (or other) URL embedded in a ``*_refname`` value."""
+    if raw is None:
+        return None
+    match = _REF_HREF.search(str(raw))
+    if not match:
+        return None
+    url = match.group(1).strip("\"'")
+    return url or None
 
 
 def parse_float(value: Any, default: float = math.nan) -> float:
@@ -264,15 +295,24 @@ def build_planet_record(
     and the stellar mass and label it DERIVED; otherwise leave it UNKNOWN.
     """
     table = policy.table
-    reference = str(row.get("pl_refname") or "").strip() or None
+    # Planetary and stellar parameters can come from different papers even
+    # within one default solution, so each group keeps its own citation.
+    reference = clean_reference(row.get("pl_refname"))
+    stellar_reference = clean_reference(row.get("st_refname")) or reference
+    planet_url = reference_url(row.get("pl_refname"))
 
     def column(name: str, unit: u.UnitBase) -> Parameter:
         return _param_from_row(row, name, unit, table=table, reference=reference, retrieved=retrieved)
 
+    def stellar_column(name: str, unit: u.UnitBase) -> Parameter:
+        return _param_from_row(
+            row, name, unit, table=table, reference=stellar_reference, retrieved=retrieved
+        )
+
     host_name = str(row.get("hostname") or "").strip()
-    teff = column("st_teff", u.K)
-    st_radius = column("st_rad", u.R_sun)
-    st_mass = column("st_mass", u.M_sun)
+    teff = stellar_column("st_teff", u.K)
+    st_radius = stellar_column("st_rad", u.R_sun)
+    st_mass = stellar_column("st_mass", u.M_sun)
 
     # st_lum is log10(L/L_sun) in the archive.
     log_lum = parse_float(row.get("st_lum"))
@@ -281,7 +321,7 @@ def build_planet_record(
             10.0**log_lum,
             u.L_sun,
             provenance="{0}.st_lum (10^log L)".format(table),
-            reference=reference,
+            reference=stellar_reference,
             retrieved=retrieved,
         )
     else:
@@ -293,8 +333,8 @@ def build_planet_record(
         radius=st_radius,
         mass=st_mass,
         luminosity=luminosity,
-        metallicity=column("st_met", u.dimensionless_unscaled),
-        age=column("st_age", u.Gyr),
+        metallicity=stellar_column("st_met", u.dimensionless_unscaled),
+        age=stellar_column("st_age", u.Gyr),
         spectral_type=str(row.get("st_spectype") or "").strip(),
         position=sky_position(
             host_name,
@@ -306,7 +346,7 @@ def build_planet_record(
             ),
         ),
         source_table=table,
-        reference=reference,
+        reference=stellar_reference,
     )
 
     period = column("pl_orbper", u.day)
@@ -341,6 +381,19 @@ def build_planet_record(
         ),
         epoch_periastron=column("pl_orbtper", u.day),
         epoch_transit=column("pl_tranmid", u.day),
+        # Review section 10: the archive preserves the source publication's
+        # convention and carries no column saying which it is.  Claiming
+        # PLANET here would be inventing metadata, so the honest value is
+        # AS_REPORTED and the ambiguity travels with the element.
+        periastron_convention=(
+            PeriastronConvention.AS_REPORTED
+            if arg_periastron.is_known
+            else PeriastronConvention.UNKNOWN
+        ),
+        # pl_orbtper and pl_tranmid are Julian days; the archive does not
+        # publish a machine-readable time scale for them.
+        epoch_scale=TimeScale.JD_UNSPECIFIED,
+        reference=reference,
     )
 
     return PlanetRecord(
@@ -359,5 +412,9 @@ def build_planet_record(
         solution_policy=policy,
         source_table=table,
         reference=reference,
-        extra={"published_semimajor_axis": published_axis},
+        extra={
+            "published_semimajor_axis": published_axis,
+            "reference_url": planet_url,
+            "stellar_reference": stellar_reference,
+        },
     )

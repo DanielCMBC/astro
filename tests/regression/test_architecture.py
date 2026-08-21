@@ -340,3 +340,81 @@ def test_only_the_scene_builder_and_slice_bridge_frames_and_primitives():
         if path.name == "scene_builder.py":
             continue
         assert "FramedPosition" not in _code_only(path), path.name
+
+
+# -- review section 6: display radius is not a physical quantity ------------
+
+
+SCIENCE_PACKAGES = ("physics", "data", "spectroscopy", "classification", "coordinates")
+
+
+def test_display_radius_never_reaches_the_science_layers():
+    """Review section 6: display radius is strictly a rendering parameter.
+
+    It must never enter gravitational, transit-depth, density, collision,
+    orbital-distance or stellar-radius calculations, nor any scientific
+    plot. The cheapest way to guarantee that is for the science packages
+    never to see the symbol at all.
+    """
+    offenders = []
+    for package in SCIENCE_PACKAGES:
+        for path in _python_files(package):
+            code = _code_only(path)
+            for symbol in ("display_radius", "DisplayScale", "radius_display"):
+                if symbol in code:
+                    offenders.append("{0}/{1}: {2}".format(package, path.name, symbol))
+    assert not offenders, offenders
+
+
+def test_the_physical_radius_is_the_one_the_science_uses():
+    """Density and gravity must come from the catalogued radius."""
+    import astropy.units as u
+
+    from astro_explorer.data.schema import build_planet_record
+
+    record = build_planet_record(
+        {"pl_name": "T b", "hostname": "T", "pl_rade": 1.0, "pl_bmasse": 1.0}
+    )
+    # Earth's values, from the physical radius - not from anything a
+    # renderer chose.
+    assert record.bulk_density.value_in(u.g / u.cm**3) == pytest.approx(5.495, rel=1e-3)
+    assert record.surface_gravity.value_in(u.m / u.s**2) == pytest.approx(9.798, rel=1e-3)
+
+
+def test_scaling_the_display_does_not_move_the_planet():
+    """Exaggerating radii must not perturb any orbital distance."""
+    import numpy as np
+
+    from astro_explorer.app.vertical_slice import build_slice, load_reference_catalog
+    from astro_explorer.rendering.scene_builder import build_frame_scene
+
+    try:
+        catalog = load_reference_catalog()
+    except FileNotFoundError:  # pragma: no cover
+        pytest.skip("reference snapshot not committed")
+
+    slice_ = build_slice("HD 80606", catalog)
+    anomalies = slice_.mean_anomalies(2458882.344)
+
+    exaggerated = build_frame_scene(
+        slice_.frame, slice_.star, slice_.planets, mean_anomalies=anomalies
+    )
+    true_scale = build_frame_scene(
+        slice_.frame, slice_.star, slice_.planets, mean_anomalies=anomalies,
+        exaggerate=False,
+    )
+
+    assert exaggerated.planets[0].radius_display != true_scale.planets[0].radius_display
+    assert np.allclose(
+        exaggerated.planets[0].position_local, true_scale.planets[0].position_local
+    )
+    assert np.allclose(
+        exaggerated.orbits[0].points_local, true_scale.orbits[0].points_local
+    )
+
+
+def test_the_true_scale_mode_says_it_is_to_scale():
+    from astro_explorer.rendering.scene_builder import DisplayScale
+
+    assert "common scale" in DisplayScale.for_system(0.005, 0.03, exaggerate=False).describe()
+    assert "not to scale" in DisplayScale.for_system(0.005, 0.03).describe(11.6)

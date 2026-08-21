@@ -32,6 +32,15 @@ from .kepler import (
     solve_kepler,
     true_anomaly_from_eccentric,
 )
+from .epoch import Epoch, EpochKind, TimeScale
+from .orbital_semantics import (
+    OrbitValidity,
+    PeriastronConvention,
+    angular_difference,
+    planet_to_stellar_reflex,
+    resolve_argument_of_periapsis,
+    stellar_reflex_to_planet,
+)
 from .orientation import (
     node_vector,
     orbit_normal,
@@ -84,6 +93,15 @@ from .stellar import (
 )
 
 __all__ = [
+    "Epoch",
+    "EpochKind",
+    "OrbitValidity",
+    "PeriastronConvention",
+    "TimeScale",
+    "angular_difference",
+    "planet_to_stellar_reflex",
+    "resolve_argument_of_periapsis",
+    "stellar_reflex_to_planet",
     "MU_SUN_AU3_PER_DAY2",
     "StateVector",
     "areal_velocity",

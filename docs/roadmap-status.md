@@ -62,7 +62,8 @@ its absence. `physics/gravity.py` is likewise deferred with Phase 10.
 | 2 - extract reusable scientific core | done |
 | 3 - replace legacy OpenGL internals | done: `rendering/gl_backend.py` renders through VAO/VBO/EBO, GLSL 3.3 core programs and instanced draws, offscreen. No `glBegin`, `gluSphere` or matrix stack anywhere - asserted by test. Picking and the sphere meshes were already in place. |
 | 4 - one correct star + one planet | done: see [`vertical-slice.md`](vertical-slice.md). HD 80606 b (`e = 0.93183`) end to end, verified against independently derivable values. |
-| 5 - complete host systems | not started |
+| 4a - orbital-semantics pass (review section 14) | done |
+| 5 - complete host systems / multi-planet SystemFrame | next |
 | 6-11 | not started |
 
 ### Phase 4 acceptance criteria
@@ -82,6 +83,27 @@ its absence. `physics/gravity.py` is likewise deferred with Phase 10.
 Phases 3 and 4 are complete without touching `stellar_navigator_3d.py`: the
 prototype is not in this checkout, and the replacements were built from the
 formula reference rather than ported from it.
+
+## Review section 14 - orbital-semantics pass
+
+Gating task list from `CURRENT_3D_VERTICAL_SLICE_REVIEW.md`, all complete.
+See [`orbital-semantics.md`](orbital-semantics.md).
+
+| Task | Status | Where |
+|---|---|---|
+| preserve raw omega | done | `OrbitalElements.argument_of_periastron` |
+| store periastron convention | done | `physics/orbital_semantics.py` |
+| preserve publication/reference | done | `clean_reference`, `reference_url` |
+| add `pl_orbtper` | done | `epoch_periastron` |
+| preserve time-system/epoch metadata | done | `physics/epoch.py` |
+| geometry-valid vs phase-valid | done | `OrbitValidity` |
+| partial vs full orientation | done | `OrbitValidity` |
+| test the 180-degree conversion | done | `tests/physics/test_orbital_semantics.py` |
+| preserve unknown Omega | done | carried over, still tested |
+| keep visualisation assumptions explicit | done | `describe_orbit`, dashed orbits |
+
+Review section 6 (physical vs display radius) is enforced by
+`test_display_radius_never_reaches_the_science_layers`.
 
 ## Formula reference coverage
 

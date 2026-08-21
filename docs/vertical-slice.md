@@ -57,6 +57,10 @@ section 3.2 describes: eight published parameter sets, and
 `drop_duplicates` would have picked whichever sorted first. The snapshot
 carries the one the archive marks as default, from Pearson et al. (2022).
 
+> The orbital *semantics* that sit on top of this - which orbit `omega`
+> describes, which time system an epoch uses - are covered separately in
+> [`orbital-semantics.md`](orbital-semantics.md).
+
 ## Unknown Omega is not zero Omega
 
 The longitude of the ascending node is not observable from transits or
@@ -74,7 +78,6 @@ The report prints both facts:
 
 ```
   Inclination i:     89.24 +/- 0.01 deg
-  Arg. periapsis w:  -58.89 deg
   Asc. node O:       UNKNOWN
                      display normalisation 0 deg [assumed for visualisation]
 ```
@@ -161,12 +164,13 @@ the full scientific report and says why it skipped the picture.
 
 | File | Subject |
 |---|---|
-| `tests/physics/test_orientation.py` | the transform, case by case (43 tests) |
+| `tests/physics/test_orientation.py` | the transform, case by case (43) |
 | `tests/physics/test_conservation.py` | second law, energy, vis-viva, angular momentum (45) |
+| `tests/physics/test_orbital_semantics.py` | omega convention, epochs, validity (54) |
 | `tests/coordinates/test_system_frame.py` | frames, mixing, precision (27) |
-| `tests/regression/test_vertical_slice.py` | the chain end to end (36) |
+| `tests/regression/test_vertical_slice.py` | the chain end to end (48) |
 | `tests/regression/test_gl_backend.py` | real GL 3.3, pixels (12) |
-| `tests/regression/test_architecture.py` | the golden rule, mechanically (27) |
+| `tests/regression/test_architecture.py` | the golden rule, mechanically (31) |
 
 The orientation tests cross-check the matrix composition against the
 **expanded scalar equations** of the formula reference, section 11, written

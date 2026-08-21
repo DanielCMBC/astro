@@ -10,6 +10,12 @@ Two rules are enforced here rather than left to callers:
 * the orbit's *shape*, its *orientation* and its *phase* are tracked as three
   separate knowledge states, because an exoplanet routinely has a well
   measured shape, a partly measured orientation and no usable phase at all.
+
+Review sections 9-11 add a third rule: an element's *meaning* is recorded
+alongside its value. The raw ``argument_of_periastron`` is stored exactly as
+the catalogue gave it, and :attr:`OrbitalElements.periastron_convention`
+says whose orbit it describes. Nothing infers the convention from the
+number.
 """
 
 from __future__ import annotations
@@ -21,7 +27,13 @@ import astropy.units as u
 import numpy as np
 
 from ..provenance import Parameter, Status, assumed, derived, unknown
+from .epoch import Epoch, EpochKind, TimeScale
 from .kepler import solve_kepler, true_anomaly_from_eccentric
+from .orbital_semantics import (
+    OrbitValidity,
+    PeriastronConvention,
+    resolve_argument_of_periapsis,
+)
 from .orientation import (
     perifocal_position,
     position_from_eccentric_anomaly,
@@ -30,6 +42,8 @@ from .orientation import (
 
 __all__ = [
     "PhaseKnowledge",
+    "OrbitValidity",
+    "PeriastronConvention",
     "OrbitalElements",
     "rotation_perifocal_to_reference",
     "perifocal_position",
@@ -83,6 +97,18 @@ class OrbitalElements:
     epoch_transit: Parameter = unknown(u.day)  # BJD
     mean_anomaly_at_epoch: Parameter = unknown(u.rad)
 
+    #: Whose orbit ``argument_of_periastron`` describes.  Never inferred from
+    #: the value; defaults to AS_REPORTED because that is what a catalogue
+    #: without a convention column actually tells us (review section 10).
+    periastron_convention: PeriastronConvention = PeriastronConvention.AS_REPORTED
+
+    #: Time system the epochs are quoted in (review section 11).
+    epoch_scale: TimeScale = TimeScale.JD_UNSPECIFIED
+
+    #: Publication the elements came from, kept with them rather than only
+    #: on the record that owns them.
+    reference: str | None = None
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "semimajor_axis", _param(self.semimajor_axis, u.au))
         object.__setattr__(self, "eccentricity", _param(self.eccentricity, u.dimensionless_unscaled))
@@ -95,6 +121,10 @@ class OrbitalElements:
         object.__setattr__(self, "epoch_periastron", _param(self.epoch_periastron, u.day))
         object.__setattr__(self, "epoch_transit", _param(self.epoch_transit, u.day))
         object.__setattr__(self, "mean_anomaly_at_epoch", _param(self.mean_anomaly_at_epoch, u.rad))
+
+        # An absent angle has no convention to speak of.
+        if not self.argument_of_periastron.is_known:
+            object.__setattr__(self, "periastron_convention", PeriastronConvention.UNKNOWN)
 
     # -- knowledge state -------------------------------------------------
     @property
@@ -136,6 +166,80 @@ class OrbitalElements:
     def can_compute_current_position(self) -> bool:
         return self.phase_knowledge is PhaseKnowledge.CURRENT_POSITION_COMPUTABLE
 
+    @property
+    def argument_of_periapsis_planet(self) -> Parameter:
+        """The planet-frame argument of periapsis implied by the raw value.
+
+        The raw element is never modified. This is the value the 3D
+        transform should use, and its status records how much was known:
+        MEASURED under a stated planet convention, DERIVED after a
+        stellar-reflex conversion, ASSUMED_FOR_VISUALIZATION when the
+        catalogue never said (review section 10).
+        """
+        return resolve_argument_of_periapsis(
+            self.argument_of_periastron, self.periastron_convention
+        )
+
+    @property
+    def periastron_convention_is_assumed(self) -> bool:
+        """True when periapsis orientation rests on an unstated convention."""
+        return (
+            self.argument_of_periastron.is_known
+            and not self.periastron_convention.is_determinate
+        )
+
+    @property
+    def validity(self) -> OrbitValidity:
+        """What the published elements support (review section 11)."""
+        flags = OrbitValidity.NONE
+
+        if self.shape_known:
+            flags |= OrbitValidity.GEOMETRY_VALID
+        if self.can_compute_current_position:
+            flags |= OrbitValidity.PHASE_VALID
+
+        known_angles = sum(
+            1
+            for parameter in (
+                self.inclination,
+                self.argument_of_periastron,
+                self.longitude_of_ascending_node,
+            )
+            if parameter.is_scientific
+        )
+        # ORIENTATION_FULL additionally requires that omega's convention be
+        # stated: three known angles under an unknown convention still leave
+        # periapsis ambiguous by 180 degrees.
+        if known_angles == 3 and self.periastron_convention.is_determinate:
+            flags |= OrbitValidity.ORIENTATION_FULL
+        elif known_angles > 0:
+            flags |= OrbitValidity.ORIENTATION_PARTIAL
+
+        return flags
+
+    @property
+    def epochs(self) -> list[Epoch]:
+        """Published epochs, each with its kind and time system."""
+        found: list[Epoch] = []
+        if self.epoch_periastron.is_known:
+            found.append(
+                Epoch(self.epoch_periastron, EpochKind.PERIASTRON, self.epoch_scale, self.reference)
+            )
+        if self.epoch_transit.is_known:
+            found.append(
+                Epoch(self.epoch_transit, EpochKind.TRANSIT, self.epoch_scale, self.reference)
+            )
+        if self.mean_anomaly_at_epoch.is_known:
+            found.append(
+                Epoch(
+                    self.mean_anomaly_at_epoch,
+                    EpochKind.MEAN_ANOMALY_AT_EPOCH,
+                    self.epoch_scale,
+                    self.reference,
+                )
+            )
+        return found
+
     # -- display normalisation -------------------------------------------
     def for_display(self) -> "OrbitalElements":
         """Fill only what a renderer strictly needs, tagged as assumptions.
@@ -161,13 +265,20 @@ class OrbitalElements:
                 provenance="display-normalisation",
                 note="inclination unknown; orbit drawn face-on",
             )
-        if not self.argument_of_periastron.is_known:
+        resolved = self.argument_of_periapsis_planet
+        if not resolved.is_known:
             updates["argument_of_periastron"] = assumed(
                 0.0,
                 u.rad,
                 provenance="display-normalisation",
                 note="argument of periastron unknown; normalised to 0 deg",
             )
+        elif resolved is not self.argument_of_periastron:
+            # Either converted from the stellar reflex orbit, or used under
+            # an assumed convention.  Either way the drawn value is not the
+            # raw catalogue number, so it travels with its own status.
+            updates["argument_of_periastron"] = resolved
+            updates["periastron_convention"] = PeriastronConvention.PLANET
         if not self.longitude_of_ascending_node.is_known:
             updates["longitude_of_ascending_node"] = assumed(
                 0.0,

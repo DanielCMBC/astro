@@ -223,11 +223,6 @@ class SystemSlice:
         for label, published, shown in (
             ("Inclination i", elements.inclination, display.inclination),
             (
-                "Arg. periapsis w",
-                elements.argument_of_periastron,
-                display.argument_of_periastron,
-            ),
-            (
                 "Asc. node O",
                 elements.longitude_of_ascending_node,
                 display.longitude_of_ascending_node,
@@ -243,9 +238,42 @@ class SystemSlice:
                     )
                 )
 
+        # The argument of periastron needs its convention stated alongside
+        # it, because the raw number is meaningless without one.
+        raw_omega = elements.argument_of_periastron
+        resolved = elements.argument_of_periapsis_planet
+        if raw_omega.is_known:
+            lines.append("  {0:<19}{1}  (raw, as catalogued)".format(
+                "Arg. periapsis w:", raw_omega.to(u.deg).format()
+            ))
+            lines.append("  {0:<19}{1}".format(
+                "  convention:", elements.periastron_convention.label
+            ))
+            lines.append("  {0:<19}{1}  [{2}]".format(
+                "  used for planet:", resolved.to(u.deg).format(with_status=False),
+                resolved.status_label,
+            ))
+            if elements.periastron_convention_is_assumed:
+                lines.append("  {0:<19}{1}".format(
+                    "  caveat:", elements.periastron_convention.caveat
+                ))
+        else:
+            lines.append("  {0:<19}UNKNOWN".format("Arg. periapsis w:"))
+            lines.append("  {0:<19}display normalisation {1} [{2}]".format(
+                "", display.argument_of_periastron.to(u.deg).format(with_status=False),
+                display.argument_of_periastron.status_label,
+            ))
+
+        lines.append("")
+        lines.append("ORBIT VALIDITY")
+        lines.extend("  " + line for line in elements.validity.describe())
+        for epoch in elements.epochs:
+            lines.append("  " + epoch.describe())
+        if not elements.epochs:
+            lines.append("  no epoch published; the orbital phase is not constrained")
+        lines.append("  Reference:         {0}".format(_clean_reference(elements.reference)))
+
         lines += [
-            "  Phase knowledge:   {0}".format(elements.phase_knowledge.value),
-            "  Orientation fully measured: {0}".format(elements.orientation_known),
             "",
             "PROPAGATED STATE at BJD {0:.4f}".format(time_bjd),
         ]
