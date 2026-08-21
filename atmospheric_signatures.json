@@ -1,0 +1,54 @@
+{
+  "H₂O (Water)": {
+    "wavelengths": [
+      0.94,
+      1.14,
+      1.4,
+      1.9,
+      2.7,
+      6.3
+    ],
+    "color": "blue"
+  },
+  "CH₄ (Methane)": {
+    "wavelengths": [
+      1.66,
+      2.2,
+      2.37,
+      3.31,
+      7.66
+    ],
+    "color": "green"
+  },
+  "CO₂ (Carbon Dioxide)": {
+    "wavelengths": [
+      1.6,
+      2.0,
+      2.7,
+      4.3,
+      15.0
+    ],
+    "color": "gray"
+  },
+  "CO (Carbon Monoxide)": {
+    "wavelengths": [
+      2.35,
+      4.67
+    ],
+    "color": "purple"
+  },
+  "Na (Sodium)": {
+    "wavelengths": [
+      0.589,
+      0.5896
+    ],
+    "color": "orange"
+  },
+  "K (Potassium)": {
+    "wavelengths": [
+      0.7665,
+      0.7699
+    ],
+    "color": "red"
+  }
+}

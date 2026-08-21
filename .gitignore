@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# PyInstaller output
+Exoplanet_Analyzer/
+
+# Local runtime state
+exoplanet_analyzer.log
+renders/
+*.tmp
+*.feather.tmp
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
