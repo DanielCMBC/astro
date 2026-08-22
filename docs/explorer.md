@@ -38,7 +38,7 @@ def active_frame(self):
 There is no state to drift. `focus()` names a target system without moving
 anything; the frame becomes active when, and only when, the camera arrives.
 
-### The engage radius is derived, not chosen
+### The engage radius follows from the precision policy
 
 ```
 engage_radius = FLOAT32_SAFE_MAGNITUDE / FRAME_ENGAGE_MARGIN
@@ -46,10 +46,28 @@ engage_radius = FLOAT32_SAFE_MAGNITUDE / FRAME_ENGAGE_MARGIN
 
 For a `SystemFrame` that is `1e6 / 10 = 1e5 AU`, which is **0.485 pc**.
 
-So "close enough to enter the system" and "close enough for AU coordinates
-to survive being narrowed to float32" are the same statement, with an order
-of magnitude of headroom for the geometry drawn around the camera. Nobody
-picked 0.485 pc; it fell out of the float32 mantissa.
+Both constants are engineering policy: `1e6` is the coordinate magnitude
+beyond which float32 can no longer represent a unit step, and `10` is the
+headroom kept for geometry drawn around the camera rather than the camera
+alone. **0.485 pc is derived from that chosen precision budget** - it is not
+a physical constant, and changing either number moves it.
+
+What the derivation buys is that "close enough to enter the system" and
+"close enough for AU coordinates to survive being narrowed to float32"
+remain the same statement, instead of two thresholds that can drift apart.
+
+### What the precision actually is at the boundary
+
+At `1e5 AU`, float32 spacing is about `7.8e-3 AU`, or roughly
+`1.2e6 km`. That is visually harmless there - inner-system geometry is far
+below a pixel at that range - but it should not be described as high
+scientific spatial precision. It is a *rendering* budget.
+
+The measurement that matters to a renderer is screen-space error, and
+`test_screen_space_error_stays_below_a_quarter_pixel` checks it directly:
+project the float64 reference position and the float32 rendered coordinate
+through the same camera, and require the difference to stay under a quarter
+of a pixel for visible bodies.
 
 ### The approach
 
@@ -155,5 +173,5 @@ where the system sits in the galaxy never enters the local geometry.
 | selected object label is always visible | `test_the_selected_label_is_always_visible` |
 | LOD is based on projected size | `test_lod_follows_projected_size_not_world_distance` |
 | production code does not import the legacy script | `test_no_production_module_imports_the_legacy_script` |
-| all tests stay green | 603 |
+| all tests stay green | the full pytest suite |
 | headless GL CI produces verified artifacts | the `opengl` job renders the approach and asserts the frames exist |

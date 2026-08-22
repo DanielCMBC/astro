@@ -116,7 +116,8 @@ python -m astro_explorer.app.explorer_demo            # neighbourhood -> system
 python -m astro_explorer.app.explorer_demo --no-render
 ```
 
-Fly through the host stars, select one, enter its system. Which reference
+Fly through the host stars, select one, enter its system, and read a panel
+that states where every number came from. Which reference
 frame is active is not a mode the user toggles - it is the finest frame
 whose engage radius contains the camera, and that radius is derived from the
 float32 limit rather than chosen. So "close enough to enter the system" and
@@ -154,7 +155,7 @@ src/astro_explorer/
                                scene contract, OpenGL 3.3 backend
     app/                       state and controller
     ui/                        Tkinter shell and matplotlib plots
-tests/                         540 tests
+tests/                         the full regression suite
 docs/                          architecture, physics, provenance, assets, roadmap status
 legacy/                        the original single-file program, preserved
 tables/                        733 NASA IPAC atmospheric spectra
@@ -219,6 +220,7 @@ resource in `assets/manager.py` is enough to get it bundled.
 * [`docs/orbital-semantics.md`](docs/orbital-semantics.md)
 * [`docs/multi-planet.md`](docs/multi-planet.md)
 * [`docs/explorer.md`](docs/explorer.md)
+* [`docs/explorer-b.md`](docs/explorer-b.md)
 * [`docs/legacy-3d-prototype.md`](docs/legacy-3d-prototype.md)
 * [`docs/architecture.md`](docs/architecture.md)
 * [`docs/physics.md`](docs/physics.md)

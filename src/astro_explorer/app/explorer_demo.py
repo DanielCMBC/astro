@@ -21,7 +21,13 @@ from pathlib import Path
 import astropy.units as u
 import numpy as np
 
-from .explorer import Explorer, UniverseTarget, ViewState
+from .explorer import (
+    Explorer,
+    UniverseTarget,
+    UnknownSystemPositionError,
+    ViewState,
+)
+from .time_controls import TimeControls
 from .vertical_slice import build_slice, load_reference_catalog
 
 __all__ = ["main", "build_explorer", "render_approach"]
@@ -127,6 +133,29 @@ def render_approach(
     return written
 
 
+def _print_panels(explorer: Explorer, system, epoch: float) -> None:
+    """Show the system summary and one selected planet, with provenance."""
+    print()
+    print("SYSTEM PANEL")
+    panel = explorer.panel(epoch)
+    if panel is not None:
+        print("\n".join("  " + line for line in panel.render()))
+
+    if not system.planets:
+        return
+
+    record = system.planets[0]
+    if record.entity_id is None:
+        return
+
+    explorer.select(str(record.entity_id), "planet")
+    print()
+    print("SELECTED PLANET PANEL  (selection generation {0})".format(explorer.generation))
+    planet_panel = explorer.panel(epoch)
+    if planet_panel is not None:
+        print("\n".join("  " + line for line in planet_panel.render()))
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="HD 80606")
@@ -139,12 +168,32 @@ def main(argv=None) -> int:
     catalog = load_reference_catalog()
     explorer = build_explorer(catalog)
     system = build_slice(args.host, catalog)
-    explorer.focus(args.host, system.planets, system.star)
-    epoch = args.time if args.time is not None else DEFAULT_EPOCHS.get(args.host, 2457000.0)
 
     print("=" * 78)
     print("EXPLORER: neighbourhood -> {0}".format(args.host))
     print("=" * 78)
+
+    # A host with no published distance has no place in the neighbourhood
+    # view and cannot be flown to. It opens detached instead: the star is
+    # the origin of its own frame, and no galactic position is claimed.
+    detached = False
+    try:
+        explorer.focus(args.host, system.planets, system.star)
+    except UnknownSystemPositionError as exc:
+        print("Cannot fly to {0}: {1}".format(args.host, exc))
+        print("Opening it detached instead.")
+        print()
+        explorer.open_detached(args.host, system.planets, system.star)
+        detached = True
+
+    controls = TimeControls.for_system(system.planets)
+    if args.time is not None:
+        controls.seek(args.time, rebase=True)
+    elif args.host in DEFAULT_EPOCHS and any(r.elements.epochs for r in system.planets):
+        pass  # for_system already picked a published epoch
+    else:
+        controls.seek(DEFAULT_EPOCHS.get(args.host, 2457000.0), rebase=True)
+    epoch = controls.epoch_bjd
     print("Hosts placed:      {0}".format(len(explorer.targets)))
     skipped = getattr(explorer, "skipped_hosts", [])
     if skipped:
@@ -155,6 +204,15 @@ def main(argv=None) -> int:
         )
     print()
     print("\n".join(explorer.describe()))
+
+    print()
+    print("\n".join(controls.describe()))
+
+    if detached:
+        print()
+        print("\n".join(explorer.describe()))
+        _print_panels(explorer, system, epoch)
+        return 0
 
     print()
     print("APPROACH")
@@ -186,6 +244,7 @@ def main(argv=None) -> int:
     explorer.enter_system()
     print()
     print("\n".join(explorer.describe()))
+    _print_panels(explorer, system, epoch)
 
     if args.no_render:
         return 0

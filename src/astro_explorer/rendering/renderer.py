@@ -176,9 +176,11 @@ class SceneDescription:
     ):
         """Screen positions for body labels (review section 15).
 
-        Returns ``(identifier, x, y, depth, screen_radius)`` for every
+        Returns ``(label, x, y, depth, screen_radius, entity_id)`` for every
         labelled body that is in front of the camera and inside the
-        viewport. Placement is computed here rather than in a shader so any
+        viewport. The label is what a front end draws; the entity id is what
+        ``priority`` is matched against, so a renamed body keeps its
+        priority. Placement is computed here rather than in a shader so any
         UI - a GL text pass, a Qt overlay, or PIL in the demo - can draw
         them the same way.
 
@@ -220,14 +222,25 @@ class SceneDescription:
                 / np.tan(0.5 * camera.fov_y_rad)
                 * (height * 0.5)
             )
+            # Priority is matched on the stable identifier; the label is
+            # only ever the text drawn. A renamed body keeps its priority.
             placements.append(
-                (body.label, float(x), float(y), float(clip[3]), float(screen_radius))
+                (
+                    body.label,
+                    float(x),
+                    float(y),
+                    float(clip[3]),
+                    float(screen_radius),
+                    body.identifier,
+                )
             )
 
         # Priority first, then nearest, so a collision resolver keeps the
         # selection and drops the far label.
         wanted = set(priority)
-        placements.sort(key=lambda item: (item[0] not in wanted, item[3]))
+        placements.sort(
+            key=lambda item: (item[5] not in wanted and item[0] not in wanted, item[3])
+        )
         return placements
 
     def star_instance_buffer(self) -> np.ndarray:

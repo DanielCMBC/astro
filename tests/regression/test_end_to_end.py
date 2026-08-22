@@ -128,7 +128,9 @@ def test_the_scene_places_planets_in_au_not_scaled_parsecs(state):
     anomalies = {"Test b": 0.0, "Test c": np.pi}
     scene = build_system_scene(records, mean_anomalies=anomalies)
 
-    positions = {planet.identifier: planet.position_local for planet in scene.planets}
+    positions = {
+        planet.label: planet.position_local for planet in scene.planets
+    }
     distance = float(np.linalg.norm(positions["Test b"]))
     assert np.isclose(distance, 0.03876, rtol=1e-4)
     # The prototype's factor would have produced a number ~1000x too large.
@@ -152,7 +154,7 @@ def test_an_assumed_orbit_is_dashed_and_annotated(state):
     scene = build_system_scene(records, mean_anomalies={"Test c": 1.0})
 
     orbits = {orbit.identifier: orbit for orbit in scene.orbits}
-    assert orbits["Test c:orbit"].dashed  # unknown eccentricity and orientation
+    assert orbits["planet:nasa:Test_c:orbit"].dashed  # unknown e and orientation
     assert any("assumed" in note for note in scene.annotations)
 
 

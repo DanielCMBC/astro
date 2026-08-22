@@ -8,6 +8,15 @@ from .nasa_archive import (
     build_query,
     fetch_catalog,
 )
+from .identity import (
+    Catalog,
+    EntityId,
+    EntityKind,
+    normalise_key,
+    parse_entity_id,
+    planet_id,
+    star_id,
+)
 from .repository import CatalogRepository, SnapshotInfo
 from .schema import PlanetRecord, StarRecord, build_planet_record, parse_float
 from .synchronizer import (
@@ -19,6 +28,13 @@ from .synchronizer import (
 )
 
 __all__ = [
+    "Catalog",
+    "EntityId",
+    "EntityKind",
+    "normalise_key",
+    "parse_entity_id",
+    "planet_id",
+    "star_id",
     "CORE_COLUMNS",
     "TAP_SYNC_URL",
     "CatalogQuery",

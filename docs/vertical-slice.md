@@ -164,13 +164,13 @@ the full scientific report and says why it skipped the picture.
 
 | File | Subject |
 |---|---|
-| `tests/physics/test_orientation.py` | the transform, case by case (43) |
-| `tests/physics/test_conservation.py` | second law, energy, vis-viva, angular momentum (45) |
-| `tests/physics/test_orbital_semantics.py` | omega convention, epochs, validity (54) |
-| `tests/coordinates/test_system_frame.py` | frames, mixing, precision (27) |
-| `tests/regression/test_vertical_slice.py` | the chain end to end (48) |
-| `tests/regression/test_gl_backend.py` | real GL 3.3, pixels (12) |
-| `tests/regression/test_architecture.py` | the golden rule, mechanically (31) |
+| `tests/physics/test_orientation.py` | the transform, case by case |
+| `tests/physics/test_conservation.py` | second law, energy, vis-viva, angular momentum |
+| `tests/physics/test_orbital_semantics.py` | omega convention, epochs, validity |
+| `tests/coordinates/test_system_frame.py` | frames, mixing, precision |
+| `tests/regression/test_vertical_slice.py` | the chain end to end |
+| `tests/regression/test_gl_backend.py` | real GL 3.3, pixels |
+| `tests/regression/test_architecture.py` | the golden rule, mechanically |
 
 The orientation tests cross-check the matrix composition against the
 **expanded scalar equations** of the formula reference, section 11, written

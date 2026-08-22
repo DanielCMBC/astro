@@ -331,7 +331,7 @@ def test_labels_project_inside_the_viewport(kepler11):
     placements = scene.project_labels(camera, 1400, 900)
 
     assert placements
-    for _label, x, y, depth, radius in placements:
+    for _label, x, y, depth, radius, _entity in placements:
         assert 0 <= x <= 1400 and 0 <= y <= 900
         assert depth > 0
         assert radius >= 0
@@ -352,14 +352,17 @@ def test_labels_come_back_nearest_first(kepler11):
 
 
 def test_collision_resolution_keeps_the_nearest_of_a_pair():
-    near = ("near", 100.0, 100.0, 1.0, 0.0)
-    far = ("far", 105.0, 102.0, 9.0, 0.0)
+    near = ("near", 100.0, 100.0, 1.0, 0.0, "star:nasa:near")
+    far = ("far", 105.0, 102.0, 9.0, 0.0, "star:nasa:far")
     kept = resolve_collisions([near, far], min_separation=26)
     assert [item[0] for item in kept] == ["near"]
 
 
 def test_well_separated_labels_are_all_kept():
-    placements = [("a", 10.0, 10.0, 1.0, 0.0), ("b", 200.0, 200.0, 2.0, 0.0)]
+    placements = [
+        ("a", 10.0, 10.0, 1.0, 0.0, "star:nasa:a"),
+        ("b", 200.0, 200.0, 2.0, 0.0, "star:nasa:b"),
+    ]
     assert len(resolve_collisions(placements, min_separation=26)) == 2
 
 

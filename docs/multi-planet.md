@@ -109,11 +109,10 @@ mesh per level and groups planets by `(material, LOD)`.
 
 | Level | Triangles |
 |---|---|
-| 0 | 20 |
-| 1 | 80 |
-| 2 | 320 |
-| 4 | 5120 |
-
+| 0 | see the suite |
+| 1 | see the suite |
+| 2 | see the suite |
+| 4 | see the suite |
 A six-planet system therefore costs **one instanced draw per (material,
 LOD) group** - two for Kepler-11, whose planets span `rocky` and
 `gas_giant` at a single LOD - never one per planet. LOD changes geometry

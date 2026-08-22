@@ -35,6 +35,7 @@ from ..physics.stellar import (
 )
 from ..provenance import Parameter, measured, unknown
 from ..text import clean_text
+from .identity import EntityId, planet_id, star_id
 from .nasa_archive import SolutionPolicy
 
 __all__ = [
@@ -141,6 +142,11 @@ class StarRecord:
     reference: str | None = None
 
     @property
+    def entity_id(self) -> EntityId | None:
+        """Stable identity, independent of the display name."""
+        return star_id(self.name)
+
+    @property
     def habitable_zone(self):
         return habitable_zone_au(self.luminosity, self.effective_temperature)
 
@@ -180,6 +186,16 @@ class PlanetRecord:
     source_table: str = ""
     reference: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+    # -- identity ---------------------------------------------------------
+    @property
+    def entity_id(self) -> EntityId | None:
+        """Stable identity, independent of the display name."""
+        return planet_id(self.name)
+
+    @property
+    def host_id(self) -> EntityId | None:
+        return self.host.entity_id
 
     # -- derived quantities ----------------------------------------------
     @property

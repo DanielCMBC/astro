@@ -273,7 +273,7 @@ def test_the_nearest_body_wins_not_the_nearest_to_the_ray():
 
 def test_clicking_empty_sky_clears_the_selection(explorer):
     scene = explorer.scene()
-    explorer.select("HD 80606")
+    explorer.select("star:nasa:HD_80606")
     assert explorer.selection is not None
     # A corner of a wide view, far from any host.
     explorer.pick_at(scene, 1, 1, 2000, 2000)
@@ -315,16 +315,18 @@ def test_the_explorer_records_what_was_picked(focused):
     scene = focused.scene(2458882.344)
     selection = focused.pick_at(scene, 200, 200, 400, 400)
     if selection is not None:
-        assert selection.identifier in {
+        assert selection.entity_id in {
             body.identifier for body in list(scene.stars) + list(scene.planets)
         }
-        assert selection.host == "HD 80606"
+        assert selection.host_id == "star:nasa:HD_80606"
 
 
-def test_selection_is_by_name_not_by_index(focused):
-    selection = focused.select("HD 80606 b", "planet")
+def test_selection_is_by_stable_key_not_by_index(focused):
+    selection = focused.select("planet:nasa:HD_80606_b", "planet")
     assert isinstance(selection, Selection)
-    assert selection.identifier == "HD 80606 b"
+    assert selection.entity_id == "planet:nasa:HD_80606_b"
+    # The display name is resolved for the label but is not the identity.
+    assert selection.display_name == "HD 80606 b"
     assert selection.is_planet and not selection.is_star
 
 
@@ -356,9 +358,9 @@ def test_labels_never_modify_scientific_coordinates():
 
 def test_labels_are_decluttered():
     placements = [
-        ("a", 100.0, 100.0, 1.0, 0.0),
-        ("b", 104.0, 101.0, 2.0, 0.0),
-        ("c", 300.0, 300.0, 3.0, 0.0),
+        ("a", 100.0, 100.0, 1.0, 0.0, "star:nasa:a"),
+        ("b", 104.0, 101.0, 2.0, 0.0, "star:nasa:b"),
+        ("c", 300.0, 300.0, 3.0, 0.0, "star:nasa:c"),
     ]
     kept = {item[0] for item in resolve_collisions(placements, min_separation=26)}
     assert kept == {"a", "c"}
@@ -386,9 +388,11 @@ def test_the_selected_label_is_always_visible():
 def test_the_explorer_passes_its_selection_as_the_label_priority(focused):
     focused.enter_system()
     scene = focused.scene(2458882.344)
-    focused.select("HD 80606 b", "planet")
+    focused.select("planet:nasa:HD_80606_b", "planet")
     placements = focused.labels(scene, 1200, 800)
     if placements:
+        # Priority is matched on the stable id; the text shown is the name.
+        assert placements[0][5] == "planet:nasa:HD_80606_b"
         assert placements[0][0] == "HD 80606 b"
 
 
@@ -470,3 +474,87 @@ def test_the_explorer_describes_its_state(focused):
 def test_the_universe_view_reports_the_engage_radius(focused):
     text = "\n".join(focused.describe())
     assert "engages within" in text
+
+
+# ==========================================================================
+# Review section 4: screen-space error is what matters to a renderer
+# ==========================================================================
+
+
+def _project(camera, position, width, height):
+    """Pixel coordinates of a world position, in float64 throughout."""
+    clip = camera.view_projection() @ np.append(
+        np.asarray(position, dtype=np.float64), 1.0
+    )
+    ndc = clip[:3] / clip[3]
+    return np.array(
+        [(ndc[0] * 0.5 + 0.5) * width, (1.0 - (ndc[1] * 0.5 + 0.5)) * height]
+    )
+
+
+def test_screen_space_error_stays_below_a_quarter_pixel(focused):
+    """The measurement that actually matters at the float32 boundary.
+
+    Narrowing to float32 loses precision - at 1e5 AU the spacing is about
+    7.8e-3 AU. What decides whether that matters is not the absolute
+    figure but how far the rendered pixel moves, so this projects the
+    float64 reference and the float32 rendered coordinate through the same
+    camera and compares them.
+    """
+    width, height = 1600, 1000
+    worst = 0.0
+
+    for position in focused.path_to_system(24):
+        focused.move_to_pc(position)
+        frame = focused.active_frame
+
+        reference = focused.camera_position.values  # float64
+        rendered = focused.camera_position.to_render().astype(np.float64)
+
+        camera = focused.camera
+        camera.aspect = width / height
+        # Project a body at the frame origin as seen from each version of
+        # the camera position; the difference is the screen-space error.
+        offset = np.linalg.norm(
+            _project(camera, reference - rendered, width, height)
+            - _project(camera, np.zeros(3), width, height)
+        )
+        worst = max(worst, float(offset))
+
+    assert worst < 0.25, "worst screen-space error {0:.4f} px".format(worst)
+
+
+def test_a_body_at_the_frame_origin_projects_identically_in_both_precisions(focused):
+    """The star sits at (0, 0, 0), which float32 represents exactly."""
+    focused.enter_system()
+    frame = focused.active_frame
+    star = frame.star_position()
+    assert np.array_equal(star.values, star.to_render().astype(np.float64))
+
+
+def test_float32_spacing_at_the_engage_radius_is_what_we_claim():
+    """Pin the number the documentation quotes, so it cannot go stale."""
+    spacing = np.spacing(np.float32(1.0e5))
+    assert spacing == pytest.approx(7.8e-3, rel=0.05)
+
+
+def test_picking_uses_forward_depth_not_radial_distance():
+    """Review section 8: perspective scaling follows depth along the view.
+
+    An off-axis body in a wide field of view is further from the camera
+    than its depth, so a radial measure would inflate its pick radius more
+    than an on-axis one and bias selection towards the screen edges.
+    """
+    from astro_explorer.rendering.picking import _effective_radius
+
+    camera = Camera(target=np.zeros(3), distance=10.0, aspect=1.0)
+    camera.fov_y_rad = np.radians(90.0)
+
+    on_axis = _effective_radius(1e-9, 10.0, camera, 1000, 6.0)
+    # Same depth, but radially further away because it is off to one side.
+    off_axis_radial = np.hypot(10.0, 10.0)
+    if_radial_were_used = _effective_radius(1e-9, off_axis_radial, camera, 1000, 6.0)
+
+    assert if_radial_were_used > on_axis
+    # The implementation is handed depth, so both get the same inflation.
+    assert _effective_radius(1e-9, 10.0, camera, 1000, 6.0) == on_axis

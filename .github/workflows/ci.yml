@@ -111,7 +111,7 @@ jobs:
         run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_multi_planet.py -q
 
       - name: Explorer navigation, picking and label tests
-        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_explorer.py tests/regression/test_legacy_isolation.py -q
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_explorer.py tests/regression/test_explorer_b.py tests/regression/test_legacy_isolation.py -q
 
       - name: Render the slice, a full system and the approach
         run: |

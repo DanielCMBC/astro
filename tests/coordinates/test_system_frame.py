@@ -114,7 +114,9 @@ def test_conversion_round_trips():
 
 
 def test_system_to_planet_frame_uses_the_exact_au_to_km_factor():
-    system = SystemFrame.for_host("X")
+    # A located frame: converting between frames is an absolute operation,
+    # which an unlocated system deliberately refuses.
+    system = SystemFrame.for_host("X", [0.0, 0.0, 0.0])
     planet = PlanetFrame()
     converted = planet.convert(system.at([1.0, 0.0, 0.0]))
     assert np.isclose(converted.values[0], AU_IN_KM, rtol=1e-9)
@@ -145,10 +147,23 @@ def test_placing_a_planet_applies_no_scale_factor_at_all():
 
 
 def test_the_frame_works_without_knowing_where_the_system_is():
-    """A host with an unusable parallax must still be renderable."""
+    """A host with an unusable parallax must still be renderable.
+
+    It renders normally and refuses to be located, which are different
+    things: the star is (0, 0, 0) in its own frame, but that is a local
+    convention and not a claim to be at the Sun.
+    """
     frame = SystemFrame.for_host("Unknown distance")
-    assert np.array_equal(frame.origin_pc, np.zeros(3))
+    assert not frame.located
     assert np.allclose(frame.place_planet([0.5, 0, 0]).values, [0.5, 0, 0])
+    assert np.array_equal(frame.star_position().values, np.zeros(3))
+
+    from astro_explorer.coordinates.system_frame import UnlocatedFrameError
+
+    with pytest.raises(UnlocatedFrameError):
+        frame.to_absolute_pc(frame.at([0.5, 0, 0]))
+    # It is nowhere, so it contains nothing in absolute terms.
+    assert not frame.contains([0.0, 0.0, 0.0])
 
 
 def test_planet_distance_from_the_star_is_the_orbital_radius():

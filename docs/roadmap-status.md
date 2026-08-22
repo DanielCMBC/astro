@@ -147,6 +147,27 @@ Review section 10, the immediate implementation target. See
 | screen-space labels + decluttering | done - selection is priority-pinned |
 | LOD by projected screen size | done - not a world-distance threshold |
 
+## Explorer B - information workflow
+
+Review sections 5, 7 and 13. See [`explorer-b.md`](explorer-b.md).
+
+| Criterion | Status |
+|---|---|
+| unknown absolute position never becomes the Sun | done - `UnknownSystemPositionError`, unlocated frames |
+| detached system cannot claim a distance | done - `UnlocatedFrameError` in the coordinate layer |
+| stable entity keys | done - `data/identity.py` |
+| aliases do not invalidate selection | done - id and label are separate fields |
+| UNKNOWN never a numeric placeholder | done - `app/panel.py` |
+| every scientific row exposes provenance | done |
+| selection does not mutate orbit state | done - panels are read-only |
+| time control uses the physical propagator | done - `app/time_controls.py` |
+| constrained vs assumed visually distinct | done - `Emphasis` |
+| async updates carry a generation token | done - `Explorer.is_current` |
+
+Deferred by review section 6: separating `active_coordinate_frame` from a
+`presentation_state`, which is wanted before the final timed free-flight
+camera and explicitly does not block Explorer B.
+
 ## Legacy prototype
 
 `stellar_navigator_3d.py` is preserved, documented and quarantined.

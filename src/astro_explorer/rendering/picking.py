@@ -68,15 +68,22 @@ class PickResult:
 
 def _effective_radius(
     radius: float,
-    distance: float,
+    depth: float,
     camera,
     viewport_height: int,
     min_pixels: float,
 ) -> float:
-    """Grow a tiny body to at least ``min_pixels`` on screen for picking."""
-    if viewport_height <= 0 or distance <= 0.0:
+    """Grow a tiny body to at least ``min_pixels`` on screen for picking.
+
+    ``depth`` is the distance along the view direction, not the radial
+    distance to the camera. Perspective scaling is governed by forward
+    depth, and the two diverge towards the edge of a wide field of view -
+    where a radial measure would inflate off-axis bodies more than
+    on-axis ones and bias selection towards the edges of the screen.
+    """
+    if viewport_height <= 0 or depth <= 0.0:
         return radius
-    world_per_pixel = 2.0 * distance * np.tan(0.5 * camera.fov_y_rad) / viewport_height
+    world_per_pixel = 2.0 * depth * np.tan(0.5 * camera.fov_y_rad) / viewport_height
     return max(radius, min_pixels * world_per_pixel)
 
 
@@ -116,7 +123,7 @@ def pick(
         if along_view + float(radius) <= 0.0:
             return
         effective = _effective_radius(
-            float(radius), distance_to_center, camera, viewport_height, min_pick_pixels
+            float(radius), along_view, camera, viewport_height, min_pick_pixels
         )
         hit = ray_sphere_intersection(origin, direction, center, effective)
         if hit is None:

@@ -38,6 +38,7 @@ __all__ = [
     "PlanetFrame",
     "FrameMismatchError",
     "PrecisionError",
+    "UnlocatedFrameError",
     "FLOAT32_SAFE_MAGNITUDE",
     "FRAME_ENGAGE_MARGIN",
 ]
@@ -58,6 +59,18 @@ class FrameMismatchError(TypeError):
 
 class PrecisionError(ValueError):
     """Raised when narrowing to float32 would lose meaningful precision."""
+
+
+class UnlocatedFrameError(ValueError):
+    """Raised when an unlocated frame is asked where it is.
+
+    A system whose host has no published distance still has a perfectly good
+    local frame - the star is its origin, planets orbit at known distances
+    from it - but it has no position in the galaxy. Converting such a frame
+    to absolute parsecs would have to invent one, and the most tempting
+    wrong answer is ``(0, 0, 0)``, which does not mean "unknown" but "at the
+    Sun". So the conversion refuses instead.
+    """
 
 
 class FrameKind(str, Enum):
@@ -163,6 +176,11 @@ class ReferenceFrame:
     origin_pc: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
     name: str = ""
 
+    #: Whether ``origin_pc`` is a real position or merely a local convention.
+    #: False means the frame works perfectly well internally but makes no
+    #: claim about where it sits in the galaxy.
+    located: bool = True
+
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "origin_pc", np.asarray(self.origin_pc, dtype=np.float64).reshape(3)
@@ -196,9 +214,18 @@ class ReferenceFrame:
 
     # -- absolute space --------------------------------------------------
     def to_absolute_pc(self, position: FramedPosition) -> np.ndarray:
-        """Convert a position in this frame to absolute parsecs, float64."""
+        """Convert a position in this frame to absolute parsecs, float64.
+
+        Raises :class:`UnlocatedFrameError` when this frame has no known
+        position, rather than treating its local origin as the Sun.
+        """
         if position.frame is not self and position.frame != self:
             raise FrameMismatchError("position does not belong to this frame")
+        if not self.located:
+            raise UnlocatedFrameError(
+                "{0} has no known galactic position, so its coordinates "
+                "cannot be expressed in absolute parsecs".format(self.describe())
+            )
         return position.values * self._pc_per_unit + self.origin_pc
 
     def from_absolute_pc(self, absolute_pc) -> FramedPosition:
@@ -258,13 +285,20 @@ class ReferenceFrame:
         return self.engage_radius * self._pc_per_unit
 
     def contains(self, absolute_pc) -> bool:
-        """True when a point in absolute parsecs is inside the engage radius."""
+        """True when a point in absolute parsecs is inside the engage radius.
+
+        An unlocated frame contains nothing in absolute terms: there is no
+        answer to "is the camera near it" when it is nowhere.
+        """
+        if not self.located:
+            return False
         offset = np.asarray(absolute_pc, dtype=np.float64).reshape(3) - self.origin_pc
         return bool(np.linalg.norm(offset) <= self.engage_radius_pc)
 
     def describe(self) -> str:
         label = self.name or self.kind.value.lower()
-        return "{0} frame [{1}]".format(label, self.unit_label)
+        text = "{0} frame [{1}]".format(label, self.unit_label)
+        return text if self.located else text + " (unlocated)"
 
     # Frames compare by value, but the generated __eq__ would compare the
     # origin arrays with `==` and raise on the ambiguous truth value.
@@ -274,6 +308,7 @@ class ReferenceFrame:
         return (
             self.kind is other.kind
             and self.name == other.name
+            and self.located == other.located
             and np.array_equal(self.origin_pc, other.origin_pc)
         )
 
@@ -282,7 +317,7 @@ class ReferenceFrame:
         return result if result is NotImplemented else not result
 
     def __hash__(self) -> int:
-        return hash((self.kind, self.name, self.origin_pc.tobytes()))
+        return hash((self.kind, self.name, self.located, self.origin_pc.tobytes()))
 
 
 @dataclass(frozen=True, eq=False)
@@ -322,10 +357,14 @@ class SystemFrame(ReferenceFrame):
     host_name: str = ""
 
     def __init__(self, origin_pc=None, host_name: str = ""):
+        # A missing origin means "not known", never "at the Sun". The frame
+        # still works internally - the star is at (0, 0, 0) AU by
+        # construction - it simply refuses to say where that is.
         super().__init__(
             kind=FrameKind.SYSTEM,
             origin_pc=np.zeros(3) if origin_pc is None else origin_pc,
             name=host_name,
+            located=origin_pc is not None,
         )
         object.__setattr__(self, "host_name", host_name)
 
@@ -335,7 +374,9 @@ class SystemFrame(ReferenceFrame):
 
         ``host_position_pc`` may be omitted: a system viewed on its own does
         not need to know where it is in the galaxy, and requiring a distance
-        would exclude every host whose parallax is unusable.
+        would exclude every host whose parallax is unusable. The resulting
+        frame is *unlocated* - it renders normally and refuses to be
+        converted to absolute coordinates.
         """
         return cls(origin_pc=host_position_pc, host_name=host_name)
 

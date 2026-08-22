@@ -211,7 +211,7 @@ def build_system_scene(
     star_radius = display_radius_au(radius_solar=host.radius.value_in(u.R_sun))
     scene.stars.append(
         RenderStar(
-            identifier=host.name,
+            identifier=str(host.entity_id) if host.entity_id else host.name,
             position_local=graph.host_render_position(host_position_pc),
             radius_display=star_radius,
             color=color.stylized if color else (1.0, 0.95, 0.85),
@@ -253,7 +253,9 @@ def build_system_scene(
                 )
                 scene.orbits.append(
                     RenderOrbit(
-                        identifier="{0}:orbit".format(record.name),
+                        identifier="{0}:orbit".format(
+                            record.entity_id or record.name
+                        ),
                         points_local=points,
                         dashed=assumed,
                     )
@@ -275,7 +277,7 @@ def build_system_scene(
 
         scene.planets.append(
             RenderPlanet(
-                identifier=record.name,
+                identifier=str(record.entity_id) if record.entity_id else record.name,
                 position_local=graph.planet_render_position(host_position_pc, offset_au),
                 radius_display=display_radius_au(
                     radius_earth=record.radius_earth.value_in(u.R_earth)
@@ -358,7 +360,10 @@ def build_frame_scene(
     star_position = frame.star_position()
     scene.stars.append(
         RenderStar(
-            identifier=star.name,
+            # The stable key is the identity picking and selection use; the
+            # display name is only ever a label, so a catalogue renaming
+            # cannot invalidate a selection.
+            identifier=str(star.entity_id) if star.entity_id else star.name,
             position_local=star_position.to_render(),
             radius_display=scale.star_radius(star.radius.value_in(u.R_sun)),
             color=color.stylized if color else (1.0, 0.95, 0.85),
@@ -397,7 +402,9 @@ def build_frame_scene(
                 points = frame.place_planet(path_au).to_render()
                 scene.orbits.append(
                     RenderOrbit(
-                        identifier="{0}:orbit".format(record.name),
+                        identifier="{0}:orbit".format(
+                            record.entity_id or record.name
+                        ),
                         points_local=points,
                         dashed=assumed,
                     )
@@ -419,7 +426,7 @@ def build_frame_scene(
 
         scene.planets.append(
             RenderPlanet(
-                identifier=record.name,
+                identifier=str(record.entity_id) if record.entity_id else record.name,
                 position_local=frame.place_planet(offset_au).to_render(),
                 radius_display=scale.planet_radius(
                     record.radius_earth.value_in(u.R_earth)
