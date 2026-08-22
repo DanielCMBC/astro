@@ -134,6 +134,26 @@ The one item the multi-planet review held back before the GitHub replay.
 | physical clock kept as a regression | `test_the_physical_clock_gives_each_planet_its_own_period` |
 | NaN / missing-string boundary utility | `astro_explorer/text.py` |
 
+## Explorer A - navigation and selection
+
+Review section 10, the immediate implementation target. See
+[`explorer.md`](explorer.md).
+
+| Criterion | Status |
+|---|---|
+| Universe/System view state machine | done - a pure function of camera position |
+| `UniverseFrame -> SystemFrame` camera transition | done - engage radius derived from the float32 limit |
+| production object picking | done - nothing behind the camera, nearest hit wins |
+| screen-space labels + decluttering | done - selection is priority-pinned |
+| LOD by projected screen size | done - not a world-distance threshold |
+
+## Legacy prototype
+
+`stellar_navigator_3d.py` is preserved, documented and quarantined.
+`tests/regression/test_legacy_isolation.py` asserts that no production
+module imports or even names it, that the entry points and CI never run it,
+and that each of its sixteen audited defects is fixed in the current code.
+
 ## Continuous integration
 
 The suite is large enough to act as the project's scientific specification,

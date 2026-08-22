@@ -171,7 +171,9 @@ class SceneDescription:
             )
             self.planets[index] = replace(planet, lod=int(level))
 
-    def project_labels(self, camera, width: int, height: int, *, margin: int = 4):
+    def project_labels(
+        self, camera, width: int, height: int, *, margin: int = 4, priority=()
+    ):
         """Screen positions for body labels (review section 15).
 
         Returns ``(identifier, x, y, depth, screen_radius)`` for every
@@ -183,6 +185,14 @@ class SceneDescription:
         ``screen_radius`` lets a caller push the text clear of the body
         instead of writing across it, which matters for a host star that
         fills a fair part of the frame.
+
+        ``priority`` names identifiers that must survive decluttering - in
+        practice the current selection, which the user must always be able
+        to see. They are returned first.
+
+        This method is strictly read-only. Label placement must never touch
+        the coordinates that positioned the bodies, so nothing here writes
+        back to the scene.
         """
         view_projection = camera.view_projection()
         placements = []
@@ -214,8 +224,10 @@ class SceneDescription:
                 (body.label, float(x), float(y), float(clip[3]), float(screen_radius))
             )
 
-        # Nearest first, so a collision resolver drops the far label.
-        placements.sort(key=lambda item: item[3])
+        # Priority first, then nearest, so a collision resolver keeps the
+        # selection and drops the far label.
+        wanted = set(priority)
+        placements.sort(key=lambda item: (item[0] not in wanted, item[3]))
         return placements
 
     def star_instance_buffer(self) -> np.ndarray:

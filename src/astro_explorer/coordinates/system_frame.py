@@ -39,11 +39,17 @@ __all__ = [
     "FrameMismatchError",
     "PrecisionError",
     "FLOAT32_SAFE_MAGNITUDE",
+    "FRAME_ENGAGE_MARGIN",
 ]
 
 #: float32 carries about seven significant decimal digits, so a coordinate
 #: beyond this many display units cannot represent a unit step.
 FLOAT32_SAFE_MAGNITUDE = 1.0e6
+
+#: Safety factor between the float32 limit and the radius at which a frame is
+#: allowed to become active. Ten leaves an order of magnitude of headroom for
+#: the geometry drawn around the camera, not just the camera itself.
+FRAME_ENGAGE_MARGIN = 10.0
 
 
 class FrameMismatchError(TypeError):
@@ -228,6 +234,33 @@ class ReferenceFrame:
         if finite.size and not np.all(np.isfinite(values)):
             raise PrecisionError("refusing to render a non-finite coordinate")
         return np.ascontiguousarray(values, dtype=np.float64).astype(np.float32)
+
+    # -- the radius within which this frame may be the active one --------
+    @property
+    def safe_radius(self) -> float:
+        """Largest coordinate this frame can render, in its own unit."""
+        return FLOAT32_SAFE_MAGNITUDE
+
+    @property
+    def engage_radius(self) -> float:
+        """Radius inside which this frame may become active, in its own unit.
+
+        Derived from the float32 limit rather than chosen: a frame becomes
+        usable exactly when its coordinates start fitting in the buffer the
+        GPU will receive, with an order of magnitude of headroom for the
+        geometry drawn around the camera.
+        """
+        return self.safe_radius / FRAME_ENGAGE_MARGIN
+
+    @property
+    def engage_radius_pc(self) -> float:
+        """The same radius expressed in absolute parsecs."""
+        return self.engage_radius * self._pc_per_unit
+
+    def contains(self, absolute_pc) -> bool:
+        """True when a point in absolute parsecs is inside the engage radius."""
+        offset = np.asarray(absolute_pc, dtype=np.float64).reshape(3) - self.origin_pc
+        return bool(np.linalg.norm(offset) <= self.engage_radius_pc)
 
     def describe(self) -> str:
         label = self.name or self.kind.value.lower()

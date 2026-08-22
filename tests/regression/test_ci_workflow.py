@@ -150,10 +150,17 @@ def test_the_gl_job_installs_the_render_extra(workflow):
     assert '".[dev,render]"' in _run_text(workflow, "opengl")
 
 
-def test_the_gl_job_renders_both_demos(workflow):
+def test_the_gl_job_renders_every_demo(workflow):
     text = _run_text(workflow, "opengl")
-    assert "slice_demo" in text
-    assert "system_demo" in text
+    for demo in ("slice_demo", "system_demo", "explorer_demo"):
+        assert demo in text
+
+
+def test_the_gl_job_runs_the_explorer_tests(workflow):
+    """Navigation and legacy isolation belong in the GL job too."""
+    text = _run_text(workflow, "opengl")
+    assert "test_explorer.py" in text
+    assert "test_legacy_isolation.py" in text
 
 
 # -- the context factory itself ---------------------------------------------
@@ -209,7 +216,7 @@ def test_the_workflow_asserts_the_frames_were_produced(workflow):
     )
     assert "exit 1" in check["run"]
 
-    render = next(i for i, n in enumerate(names) if "Render the vertical slice" in n)
+    render = next(i for i, n in enumerate(names) if n.startswith("Render the"))
     verify = next(i for i, n in enumerate(names) if "Check the frames" in n)
     assert render < verify
 

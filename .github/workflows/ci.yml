@@ -110,12 +110,17 @@ jobs:
       - name: Multi-planet rendering tests
         run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_multi_planet.py -q
 
-      - name: Render the vertical slice and a full system
+      - name: Explorer navigation, picking and label tests
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_explorer.py tests/regression/test_legacy_isolation.py -q
+
+      - name: Render the slice, a full system and the approach
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
             python -m astro_explorer.app.slice_demo --out artifacts
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
             python -m astro_explorer.app.system_demo --host Kepler-11 --out artifacts
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python -m astro_explorer.app.explorer_demo --frames 6 --out artifacts
 
       # The render steps above exit non-zero on failure, but an empty
       # output directory would still slip past if a demo ever changed its
@@ -124,8 +129,8 @@ jobs:
         run: |
           shopt -s nullglob
           frames=(artifacts/*.png)
-          if [ ${#frames[@]} -lt 2 ]; then
-            echo "expected at least 2 rendered frames, found ${#frames[@]}"
+          if [ ${#frames[@]} -lt 8 ]; then
+            echo "expected at least 8 rendered frames, found ${#frames[@]}"
             ls -la artifacts || true
             exit 1
           fi

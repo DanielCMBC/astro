@@ -104,7 +104,17 @@ def pick(
     def consider(identifier: str, kind: str, position, radius: float) -> None:
         nonlocal best
         center = np.asarray(position, dtype=np.float64)
-        distance_to_center = float(np.linalg.norm(center - origin))
+        offset = center - origin
+        distance_to_center = float(np.linalg.norm(offset))
+
+        # Reject anything behind the camera before any radius inflation.
+        # The legacy prototype measured perpendicular distance to an
+        # *infinite* line, so a star directly behind the viewer scored as
+        # well as one in front of it. Projecting onto the view direction
+        # first makes that impossible.
+        along_view = float(np.dot(offset, direction))
+        if along_view + float(radius) <= 0.0:
+            return
         effective = _effective_radius(
             float(radius), distance_to_center, camera, viewport_height, min_pick_pixels
         )

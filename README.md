@@ -36,12 +36,17 @@ Gaia, SIMBAD and the NASA archive.
 It still runs, and its own documentation is preserved at
 [`docs/legacy-3d-prototype.md`](docs/legacy-3d-prototype.md).
 
-It is not the foundation being extended. The roadmap is explicit that it
-should be progressively replaced by the modular core below, and the defects
-it demonstrates - a first-order Kepler approximation, a `0.005` AU-to-parsec
-scale factor, coplanar `[x, y, 0]` orbits, fixed-function OpenGL, invented
-missing-data defaults - are each fixed and regression-tested here. See
-[`docs/roadmap-status.md`](docs/roadmap-status.md) for the item-by-item map.
+**It is not scientifically authoritative and nothing under `src/` may
+import it** - a test enforces that. Sixteen audited defects are catalogued
+in [`docs/legacy-3d-prototype.md`](docs/legacy-3d-prototype.md), each
+verified at a line number and each with an assertion proving the current
+code does not repeat it: a first-order Kepler approximation, a `0.005`
+AU-to-parsec scale factor, coplanar `[x, y, 0]` orbits, fixed-function
+OpenGL, invented missing-data defaults, an unusable parallax becoming a
+billion parsecs, seconds mixed with days in the same anomaly, and gas-giant
+classification by orbital distance.
+
+What it got right was the interaction model, and that is carried forward.
 
 ## Setup
 
@@ -103,6 +108,20 @@ Verified against independently derivable values: `|r|` at periastron equals
 `a(1-e)` to 1e-9, periapsis speed 239.925 km/s matches
 `sqrt(mu(1+e)/(a(1-e)))`, and the specific orbital energy matches `-mu/2a`
 to a relative 1.9e-15. See [`docs/vertical-slice.md`](docs/vertical-slice.md).
+
+## Exploring
+
+```bash
+python -m astro_explorer.app.explorer_demo            # neighbourhood -> system
+python -m astro_explorer.app.explorer_demo --no-render
+```
+
+Fly through the host stars, select one, enter its system. Which reference
+frame is active is not a mode the user toggles - it is the finest frame
+whose engage radius contains the camera, and that radius is derived from the
+float32 limit rather than chosen. So "close enough to enter the system" and
+"close enough for AU coordinates to survive the GPU" are the same statement.
+See [`docs/explorer.md`](docs/explorer.md).
 
 ## Multi-planet systems
 
@@ -199,6 +218,8 @@ resource in `assets/manager.py` is enough to get it bundled.
 * [`docs/vertical-slice.md`](docs/vertical-slice.md)
 * [`docs/orbital-semantics.md`](docs/orbital-semantics.md)
 * [`docs/multi-planet.md`](docs/multi-planet.md)
+* [`docs/explorer.md`](docs/explorer.md)
+* [`docs/legacy-3d-prototype.md`](docs/legacy-3d-prototype.md)
 * [`docs/architecture.md`](docs/architecture.md)
 * [`docs/physics.md`](docs/physics.md)
 * [`docs/data-provenance.md`](docs/data-provenance.md)
