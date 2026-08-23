@@ -27,7 +27,7 @@ import astropy.units as u
 import numpy as np
 
 from ..provenance import Parameter, Status, assumed, derived, unknown
-from .epoch import Epoch, EpochKind, TimeScale
+from .epoch import Epoch, EpochKind, MeanAnomalyAnchor, TimeScale
 from .kepler import solve_kepler, true_anomaly_from_eccentric
 from .orbital_semantics import (
     OrbitValidity,
@@ -69,6 +69,13 @@ class PhaseKnowledge(str, Enum):
     CURRENT_POSITION_COMPUTABLE = "CURRENT_POSITION_COMPUTABLE"
     """Shape, period and epoch are all present: 'where is it now' is real."""
 
+    REFERENCE_ANOMALY_UNDATED = "REFERENCE_ANOMALY_UNDATED"
+    """A mean anomaly is published; the epoch it refers to is not.
+
+    The angle is a real measurement and is preserved, but ``M(t) = M0 +
+    n(t - t0)`` has no ``t0``, so no current position follows from it.
+    """
+
     DISPLAY_PHASE_ASSUMED = "DISPLAY_PHASE_ASSUMED"
     """The planet is drawn somewhere on the ellipse for illustration only."""
 
@@ -99,9 +106,15 @@ class OrbitalElements:
     inclination: Parameter = unknown(u.rad)
     argument_of_periastron: Parameter = unknown(u.rad)
     longitude_of_ascending_node: Parameter = unknown(u.rad)
-    epoch_periastron: Parameter = unknown(u.day)  # BJD
-    epoch_transit: Parameter = unknown(u.day)  # BJD
+    epoch_periastron: Parameter = unknown(u.day)  # full JD, see epoch_scale
+    epoch_transit: Parameter = unknown(u.day)  # full JD, see epoch_scale
     mean_anomaly_at_epoch: Parameter = unknown(u.rad)
+
+    #: The instant ``mean_anomaly_at_epoch`` was quoted at. Without it the
+    #: angle is not a phase: see :class:`MeanAnomalyAnchor`. Catalogues
+    #: often publish one and not the other, so it is a separate field that
+    #: is allowed to stay unknown.
+    epoch_mean_anomaly: Parameter = unknown(u.day)
 
     #: Whose orbit ``argument_of_periastron`` describes.  Never inferred from
     #: the value; defaults to AS_REPORTED because that is what a catalogue
@@ -127,6 +140,7 @@ class OrbitalElements:
         object.__setattr__(self, "epoch_periastron", _param(self.epoch_periastron, u.day))
         object.__setattr__(self, "epoch_transit", _param(self.epoch_transit, u.day))
         object.__setattr__(self, "mean_anomaly_at_epoch", _param(self.mean_anomaly_at_epoch, u.rad))
+        object.__setattr__(self, "epoch_mean_anomaly", _param(self.epoch_mean_anomaly, u.day))
 
         # An absent angle has no convention to speak of.
         if not self.argument_of_periastron.is_known:
@@ -154,11 +168,18 @@ class OrbitalElements:
 
     @property
     def phase_knowledge(self) -> PhaseKnowledge:
-        """Strongest phase statement the published elements support."""
+        """Strongest phase statement the published elements support.
+
+        A mean anomaly only counts when its reference date counts too
+        (final review section 3). ``M0`` on its own used to reach
+        :attr:`PhaseKnowledge.CURRENT_POSITION_COMPUTABLE`, which claimed a
+        position the elements cannot determine at any requested instant.
+        """
+        anchor = self.mean_anomaly_anchor
         has_epoch = (
             self.epoch_periastron.is_known
             or self.epoch_transit.is_known
-            or self.mean_anomaly_at_epoch.is_known
+            or anchor.is_dated
         )
         if not self.shape_known:
             return PhaseKnowledge.DISPLAY_PHASE_ASSUMED
@@ -166,6 +187,10 @@ class OrbitalElements:
             return PhaseKnowledge.CURRENT_POSITION_COMPUTABLE
         if has_epoch:
             return PhaseKnowledge.ORBIT_PHASE_CONSTRAINED
+        if anchor.is_known:
+            # The angle is real and worth keeping; it just cannot be moved
+            # to another date.
+            return PhaseKnowledge.REFERENCE_ANOMALY_UNDATED
         return PhaseKnowledge.ORBIT_SHAPE_KNOWN
 
     @property
@@ -235,16 +260,64 @@ class OrbitalElements:
             found.append(
                 Epoch(self.epoch_transit, EpochKind.TRANSIT, self.epoch_scale, self.reference)
             )
-        if self.mean_anomaly_at_epoch.is_known:
+        if self.epoch_mean_anomaly.is_known:
             found.append(
                 Epoch(
-                    self.mean_anomaly_at_epoch,
+                    self.epoch_mean_anomaly,
                     EpochKind.MEAN_ANOMALY_AT_EPOCH,
                     self.epoch_scale,
                     self.reference,
                 )
             )
         return found
+
+    @property
+    def mean_anomaly_anchor(self) -> MeanAnomalyAnchor:
+        """``M0`` and the instant it applies at, as one object.
+
+        The published angle never enters :attr:`epochs` as though it were a
+        date. It is paired with :attr:`epoch_mean_anomaly` here, and the
+        anchor reports for itself whether the pair can propagate.
+        """
+        return MeanAnomalyAnchor(
+            anomaly=self.mean_anomaly_at_epoch,
+            epoch=(
+                Epoch(
+                    self.epoch_mean_anomaly,
+                    EpochKind.MEAN_ANOMALY_AT_EPOCH,
+                    self.epoch_scale,
+                    self.reference,
+                )
+                if self.epoch_mean_anomaly.is_known
+                else Epoch.missing(EpochKind.MEAN_ANOMALY_AT_EPOCH)
+            ),
+        )
+
+    def epoch_of(self, kind: EpochKind) -> Epoch | None:
+        """The published epoch of one kind, or None when there is none.
+
+        Review section 2. This is the only way the propagator is allowed to
+        reach a catalogue time: the returned :class:`Epoch` carries the
+        :class:`TimeScale`, so ``canonical_jd`` applies the mission offset
+        that reading ``epoch_periastron.value_in(u.day)`` directly would
+        silently skip.
+        """
+        return next((epoch for epoch in self.epochs if epoch.kind is kind), None)
+
+    @property
+    def dated_epochs(self) -> list[Epoch]:
+        """Published epochs that are actually instants.
+
+        An angle can never appear here: :attr:`Epoch.is_dated` tests the
+        unit, and the published mean anomaly lives in
+        :attr:`mean_anomaly_anchor` rather than in an epoch slot.
+        """
+        return [epoch for epoch in self.epochs if epoch.is_dated]
+
+    def _canonical_epoch_jd(self, kind: EpochKind) -> float | None:
+        """A published epoch as a full Julian date, scale offset applied."""
+        epoch = self.epoch_of(kind)
+        return None if epoch is None else epoch.canonical_jd
 
     # -- display normalisation -------------------------------------------
     def for_display(self) -> "OrbitalElements":
@@ -322,8 +395,8 @@ class OrbitalElements:
             return None
         return 2.0 * np.pi / period
 
-    def phase_at(self, time_bjd: float, *, allow_assumed: bool = False) -> PhaseSolution:
-        """Mean anomaly at ``time_bjd``, with its full provenance.
+    def phase_at(self, time_jd: float, *, allow_assumed: bool = False) -> PhaseSolution:
+        """Mean anomaly at ``time_jd``, with its full provenance.
 
         Review section 9. The return value distinguishes a position fixed by
         a published epoch from one whose *timing* is observed but whose
@@ -332,6 +405,14 @@ class OrbitalElements:
 
         ``allow_assumed`` controls only the last of those: with it False, a
         planet whose orbit has no epoch at all yields no mean anomaly.
+
+        ``time_jd`` is a *full* Julian date, the same canonical axis
+        :class:`~astro_explorer.app.time_controls.TimeControls` runs on. The
+        published epoch it is measured against is fetched through
+        :meth:`epoch_of`, so a ``BKJD`` or ``BTJD`` element set has its
+        mission offset applied here rather than being subtracted raw: an
+        epoch of 1000 BKJD and one of 2455833 full JD give the same phase
+        at the same instant (review section 2).
         """
         motion = self.mean_motion_rad_per_day
         if motion is None:
@@ -339,17 +420,18 @@ class OrbitalElements:
 
         # 1. A periastron epoch is the cleanest anchor: M = 0 at t0, and no
         #    argument of periastron is involved at all.
-        if self.epoch_periastron.is_known:
-            t0 = self.epoch_periastron.value_in(u.day)
+        t0 = self._canonical_epoch_jd(EpochKind.PERIASTRON)
+        if t0 is not None:
             return PhaseSolution(
-                float(np.mod(motion * (time_bjd - t0), 2.0 * np.pi)),
+                float(np.mod(motion * (time_jd - t0), 2.0 * np.pi)),
                 PhaseProvenance.PERIASTRON_EPOCH,
                 omega_status=self.argument_of_periastron.status,
             )
 
         # 2. A transit epoch is an observed instant, but reading it as a
         #    mean anomaly goes through nu = pi/2 - omega.
-        if self.epoch_transit.is_known and self.eccentricity.is_known:
+        t0 = self._canonical_epoch_jd(EpochKind.TRANSIT)
+        if t0 is not None and self.eccentricity.is_known:
             from .kepler import eccentric_from_true_anomaly, mean_anomaly_from_eccentric
 
             resolved = self.argument_of_periapsis_planet
@@ -363,8 +445,7 @@ class OrbitalElements:
             mean_at_transit = mean_anomaly_from_eccentric(
                 eccentric_from_true_anomaly(nu_transit, eccentricity), eccentricity
             )
-            t0 = self.epoch_transit.value_in(u.day)
-            anomaly = float(np.mod(mean_at_transit + motion * (time_bjd - t0), 2.0 * np.pi))
+            anomaly = float(np.mod(mean_at_transit + motion * (time_jd - t0), 2.0 * np.pi))
 
             inclination = self.inclination.value_in(u.rad, 0.5 * np.pi)
             offset = conjunction_offset_scale(eccentricity, inclination)
@@ -383,12 +464,27 @@ class OrbitalElements:
                 ),
             )
 
-        # 3. A mean anomaly quoted at an epoch.
-        if self.mean_anomaly_at_epoch.is_known:
+        # 3. A mean anomaly quoted at an epoch. Only usable when the epoch
+        #    it was quoted at is published too: M(t) = M0 + n(t - t0), and a
+        #    bare M0 answers only for the instant nobody wrote down. This
+        #    branch used to return M0 unchanged for every requested date,
+        #    which is right once per orbit by accident (final review 3).
+        anchor = self.mean_anomaly_anchor
+        if anchor.is_dated:
             return PhaseSolution(
-                float(np.mod(self.mean_anomaly_at_epoch.value_in(u.rad), 2.0 * np.pi)),
+                anchor.mean_anomaly_at(time_jd, motion),
                 PhaseProvenance.MEAN_ANOMALY_AT_EPOCH,
                 omega_status=self.argument_of_periastron.status,
+            )
+        if anchor.is_known and not allow_assumed:
+            return PhaseSolution(
+                None,
+                PhaseProvenance.MEAN_ANOMALY_UNDATED,
+                omega_status=self.argument_of_periastron.status,
+                note=(
+                    "a mean anomaly is published but the epoch it refers to is "
+                    "not, so no position follows for any requested date"
+                ),
             )
 
         # 4. No epoch at all. The rate is physical; the zero point is not.
@@ -399,20 +495,20 @@ class OrbitalElements:
                 note="no epoch published; pass allow_assumed to advance from an arbitrary zero",
             )
         return PhaseSolution(
-            float(np.mod(motion * (time_bjd - JD_UNIX_EPOCH_DAYS), 2.0 * np.pi)),
+            float(np.mod(motion * (time_jd - JD_UNIX_EPOCH_DAYS), 2.0 * np.pi)),
             PhaseProvenance.ASSUMED_ZERO_PHASE,
             omega_status=self.argument_of_periastron.status,
             note="phase advances at the correct rate from an arbitrary zero",
         )
 
-    def mean_anomaly_at(self, time_bjd: float) -> float | None:
-        """Mean anomaly at ``time_bjd``, or None when no epoch is published.
+    def mean_anomaly_at(self, time_jd: float) -> float | None:
+        """Mean anomaly at ``time_jd``, or None when no epoch is published.
 
         Thin wrapper over :meth:`phase_at` for callers that only want the
         number. Anything reporting to a user should use ``phase_at`` so the
         provenance travels with it.
         """
-        return self.phase_at(time_bjd).mean_anomaly
+        return self.phase_at(time_jd).mean_anomaly
 
     def describe_orientation(self) -> list[str]:
         """UI lines that state exactly what is measured (roadmap 4.3)."""

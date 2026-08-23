@@ -6,6 +6,7 @@ normalised time) and 8.7 (Kepler consistency residual).
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from enum import Enum
 
@@ -167,8 +168,8 @@ class TimeMode(str, Enum):
         }[self]
 
 
-#: Julian date of the Unix epoch, used to place wall-clock time on the BJD
-#: axis that exoplanet ephemerides use.
+#: Julian date of the Unix epoch, used to place wall-clock time on the
+#: Julian-day axis that exoplanet ephemerides use.
 JD_UNIX_EPOCH = 2440587.5
 
 
@@ -189,34 +190,72 @@ class TimeController:
     normalized_period_seconds:
         In :attr:`TimeMode.NORMALIZED`, the wall-clock duration of one full
         orbit for every object.
-    epoch_bjd:
-        Simulation start on the BJD axis, for :attr:`TimeMode.SCALED`.
+    epoch_jd:
+        Simulation start on the full Julian-day axis, for
+        :attr:`TimeMode.SCALED`. Named ``_jd`` rather than ``_bjd``: the
+        origin is whatever full Julian day the caller handed over, and
+        nothing here promises it is exact BJD_TDB. Only the epoch's own
+        :class:`~astro_explorer.physics.epoch.TimeScale` can say that, and
+        it travels with the epoch rather than with this clock.
     """
 
     mode: TimeMode = TimeMode.SCALED
     scale_days_per_second: float = 1.0
     normalized_period_seconds: float = 8.0
-    epoch_bjd: float = JD_UNIX_EPOCH
+    epoch_jd: float = JD_UNIX_EPOCH
 
-    def simulated_bjd(self, elapsed_seconds: float, *, now_bjd: float | None = None) -> float | None:
-        """Barycentric Julian date represented by ``elapsed_seconds``.
+    def simulated_jd(self, elapsed_seconds: float, *, now_jd: float | None = None) -> float | None:
+        """Full Julian date represented by ``elapsed_seconds``.
 
-        Returns None in NORMALIZED mode, where there is no physical date.
+        Not necessarily BJD_TDB - see :attr:`epoch_jd`. Returns None in
+        NORMALIZED mode, where there is no physical date at all.
         """
         if self.mode is TimeMode.REAL:
-            if now_bjd is None:
-                raise ValueError("REAL time mode needs the current BJD")
-            return now_bjd
+            if now_jd is None:
+                raise ValueError("REAL time mode needs the current Julian date")
+            return now_jd
         if self.mode is TimeMode.SCALED:
-            return self.epoch_bjd + elapsed_seconds * self.scale_days_per_second
+            return self.epoch_jd + elapsed_seconds * self.scale_days_per_second
         return None
+
+    # -- deprecated aliases ----------------------------------------------
+    # Follow-up review section 4: the old names claimed a barycentric
+    # dynamical scale this clock never guaranteed. Kept briefly so an
+    # out-of-tree caller gets a warning rather than an AttributeError.
+    @property
+    def epoch_bjd(self) -> float:
+        """Deprecated alias for :attr:`epoch_jd`."""
+        warnings.warn(
+            "TimeController.epoch_bjd is deprecated; use epoch_jd",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.epoch_jd
+
+    @epoch_bjd.setter
+    def epoch_bjd(self, value: float) -> None:
+        warnings.warn(
+            "TimeController.epoch_bjd is deprecated; use epoch_jd",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.epoch_jd = float(value)
+
+    def simulated_bjd(self, elapsed_seconds: float, *, now_bjd: float | None = None) -> float | None:
+        """Deprecated alias for :meth:`simulated_jd`."""
+        warnings.warn(
+            "TimeController.simulated_bjd() is deprecated; use simulated_jd()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.simulated_jd(elapsed_seconds, now_jd=now_bjd)
 
     def mean_anomaly(
         self,
         elements,
         elapsed_seconds: float,
         *,
-        now_bjd: float | None = None,
+        now_jd: float | None = None,
     ) -> tuple[float | None, bool]:
         """Mean anomaly to display, and whether the phase is assumed.
 
@@ -229,11 +268,11 @@ class TimeController:
             fraction = (elapsed_seconds % self.normalized_period_seconds) / self.normalized_period_seconds
             return 2.0 * np.pi * fraction, True
 
-        time_bjd = self.simulated_bjd(elapsed_seconds, now_bjd=now_bjd)
-        if time_bjd is None:
+        time_jd = self.simulated_jd(elapsed_seconds, now_jd=now_jd)
+        if time_jd is None:
             return None, True
 
-        physical = elements.mean_anomaly_at(time_bjd)
+        physical = elements.mean_anomaly_at(time_jd)
         if physical is not None:
             return physical, not elements.can_compute_current_position
 
@@ -243,7 +282,7 @@ class TimeController:
         n = elements.mean_motion_rad_per_day
         if n is None:
             return None, True
-        return float(np.mod(n * (time_bjd - self.epoch_bjd), 2.0 * np.pi)), True
+        return float(np.mod(n * (time_jd - self.epoch_jd), 2.0 * np.pi)), True
 
     def describe(self) -> str:
         if self.mode is TimeMode.REAL:

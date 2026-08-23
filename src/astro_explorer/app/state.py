@@ -121,13 +121,13 @@ class AppState:
             self.time.scale_days_per_second = scale_days_per_second
         self.reset_clock()
 
-    def mean_anomalies(self, host: str, *, now_bjd: float | None = None) -> dict[str, float]:
+    def mean_anomalies(self, host: str, *, now_jd: float | None = None) -> dict[str, float]:
         """Current mean anomaly per planet, omitting those with no phase."""
         elapsed = self.elapsed_seconds
         result: dict[str, float] = {}
         for record in self.system_records(host):
             anomaly, _assumed = self.time.mean_anomaly(
-                record.elements, elapsed, now_bjd=now_bjd
+                record.elements, elapsed, now_jd=now_jd
             )
             if anomaly is not None:
                 result[record.name] = anomaly

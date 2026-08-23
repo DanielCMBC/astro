@@ -128,20 +128,20 @@ class SystemSlice:
         return next((p for p in self.planets if p.name == name), None)
 
     # -- propagation ------------------------------------------------------
-    def phase(self, record: PlanetRecord, time_bjd: float) -> PhaseSolution:
+    def phase(self, record: PlanetRecord, time_jd: float) -> PhaseSolution:
         """Full phase provenance for a planet (review section 9).
 
         Assumed phases are permitted here because the system view draws
         them; what matters is that the returned solution says so.
         """
-        return record.elements.phase_at(time_bjd, allow_assumed=True)
+        return record.elements.phase_at(time_jd, allow_assumed=True)
 
-    def mean_anomaly(self, record: PlanetRecord, time_bjd: float) -> tuple[float | None, bool]:
+    def mean_anomaly(self, record: PlanetRecord, time_jd: float) -> tuple[float | None, bool]:
         """``(M, phase_is_assumed)`` - the compact form of :meth:`phase`."""
-        solution = self.phase(record, time_bjd)
+        solution = self.phase(record, time_jd)
         return solution.mean_anomaly, solution.is_assumed
 
-    def placements(self, time_bjd: float) -> dict[str, tuple[float, bool]]:
+    def placements(self, time_jd: float) -> dict[str, tuple[float, bool]]:
         """``name -> (mean anomaly, phase_is_assumed)`` for every placeable planet.
 
         The flag matters. A planet with a published epoch is where the
@@ -151,16 +151,16 @@ class SystemSlice:
         """
         found: dict[str, tuple[float, bool]] = {}
         for record in self.planets:
-            solution = self.phase(record, time_bjd)
+            solution = self.phase(record, time_jd)
             if solution.is_placeable:
                 found[record.name] = (solution.mean_anomaly, solution.is_assumed)
         return found
 
-    def phase_solutions(self, time_bjd: float) -> dict[str, PhaseSolution]:
+    def phase_solutions(self, time_jd: float) -> dict[str, PhaseSolution]:
         """Full phase provenance per planet."""
-        return {record.name: self.phase(record, time_bjd) for record in self.planets}
+        return {record.name: self.phase(record, time_jd) for record in self.planets}
 
-    def mean_anomalies(self, time_bjd: float, *, include_assumed: bool = True) -> dict[str, float]:
+    def mean_anomalies(self, time_jd: float, *, include_assumed: bool = True) -> dict[str, float]:
         """Mean anomalies for every planet whose phase can be drawn.
 
         ``include_assumed=False`` keeps every planet whose *timing* was
@@ -169,7 +169,7 @@ class SystemSlice:
         real observation even when the orientation it is read through is
         normalised.
         """
-        solutions = self.phase_solutions(time_bjd)
+        solutions = self.phase_solutions(time_jd)
         return {
             name: solution.mean_anomaly
             for name, solution in solutions.items()
@@ -177,7 +177,7 @@ class SystemSlice:
             and (include_assumed or solution.status.is_observationally_anchored)
         }
 
-    def state(self, record: PlanetRecord, time_bjd: float) -> StateVector | None:
+    def state(self, record: PlanetRecord, time_jd: float) -> StateVector | None:
         """Full inertial state in the system frame, in AU and AU/day.
 
         This is the scientific output of the slice. It goes through
@@ -185,7 +185,7 @@ class SystemSlice:
         display-normalised elements so an unknown node is a documented zero
         rather than an omission.
         """
-        solution = self.phase(record, time_bjd)
+        solution = self.phase(record, time_jd)
         anomaly = solution.mean_anomaly
         if anomaly is None or not record.elements.semimajor_axis.is_known:
             return None
@@ -201,21 +201,21 @@ class SystemSlice:
             mu=self.mu,
         )
 
-    def framed_position(self, record: PlanetRecord, time_bjd: float):
+    def framed_position(self, record: PlanetRecord, time_jd: float):
         """The planet's position as a :class:`FramedPosition` in AU."""
-        state = self.state(record, time_bjd)
+        state = self.state(record, time_jd)
         if state is None:
             return None
         return self.frame.place_planet(state.position)
 
     # -- diagnostics ------------------------------------------------------
-    def energy_check(self, record: PlanetRecord, time_bjd: float) -> dict | None:
+    def energy_check(self, record: PlanetRecord, time_jd: float) -> dict | None:
         """Compare the propagated energy against ``-mu / 2a``.
 
         Surfaced rather than hidden: if this ever drifts, the propagator is
         wrong and the whole slice is untrustworthy.
         """
-        state = self.state(record, time_bjd)
+        state = self.state(record, time_jd)
         if state is None or not state.has_velocity or self.mu is None:
             return None
         axis = record.elements.semimajor_axis.value_in(u.au)
@@ -227,7 +227,7 @@ class SystemSlice:
             "relative_error": abs(measured / expected - 1.0),
         }
 
-    def describe_orbit(self, record: PlanetRecord, time_bjd: float) -> list[str]:
+    def describe_orbit(self, record: PlanetRecord, time_jd: float) -> list[str]:
         """Provenance-first report of the orbit and the propagated state."""
         elements = record.elements
         display = elements.for_display()
@@ -295,16 +295,21 @@ class SystemSlice:
         lines.extend("  " + line for line in elements.validity.describe())
         for epoch in elements.epochs:
             lines.append("  " + epoch.describe())
-        if not elements.epochs:
+        anchor = elements.mean_anomaly_anchor
+        if anchor.is_known:
+            # Listed even when undated: the angle is a real measurement, and
+            # saying nothing would look like it was never published.
+            lines.append("  " + anchor.describe())
+        if not elements.epochs and not anchor.is_known:
             lines.append("  no epoch published; the orbital phase is not constrained")
         lines.append("  Reference:         {0}".format(_clean_reference(elements.reference)))
 
         lines += [
             "",
-            "PROPAGATED STATE at BJD {0:.4f}".format(time_bjd),
+            "PROPAGATED STATE at JD {0:.4f}".format(time_jd),
         ]
 
-        state = self.state(record, time_bjd)
+        state = self.state(record, time_jd)
         if state is None:
             lines.append("  not computable from the published elements")
             return lines
@@ -329,7 +334,7 @@ class SystemSlice:
             "  Apoapsis:          {0}".format(elements.apoapsis.format()),
         ]
 
-        check = self.energy_check(record, time_bjd)
+        check = self.energy_check(record, time_jd)
         if check is not None:
             lines.append(
                 "  Energy check:      eps = {0:.9e}, -mu/2a = {1:.9e}, "
@@ -344,7 +349,7 @@ class SystemSlice:
 
         return lines
 
-    def describe_system(self, time_bjd: float) -> list[str]:
+    def describe_system(self, time_jd: float) -> list[str]:
         """System information panel (review section 15).
 
         One row per planet, ordered outwards, stating what is actually
@@ -365,7 +370,7 @@ class SystemSlice:
             period = elements.period.value_in(u.day)
             ecc = elements.eccentricity.value
 
-            state = self.state(record, time_bjd)
+            state = self.state(record, time_jd)
             radius = "{0:9.5f}".format(float(state.radius)) if state is not None else "        -"
 
             lines.append(
@@ -383,7 +388,7 @@ class SystemSlice:
                 )
             )
 
-        solutions = self.phase_solutions(time_bjd)
+        solutions = self.phase_solutions(time_jd)
         tally = {status: 0 for status in PhaseStatus}
         for solution in solutions.values():
             tally[solution.status] += 1

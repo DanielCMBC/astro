@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 
 from astro_explorer.physics.epoch import (
-    BJD_MINUS_HJD_MAX_SECONDS,
-    TDB_MINUS_UTC_SECONDS,
+    BARYCENTRIC_MINUS_GEOCENTRIC_MAX_SECONDS,
+    TDB_MINUS_UTC_FALLBACK_SECONDS,
     Epoch,
     EpochKind,
     TimeScale,
@@ -353,7 +353,9 @@ def test_a_stated_barycentric_scale_has_no_ambiguity():
 
 def test_an_unstated_scale_reports_its_worst_case():
     worst = TimeScale.JD_UNSPECIFIED.uncertainty_seconds
-    assert worst == pytest.approx(BJD_MINUS_HJD_MAX_SECONDS + TDB_MINUS_UTC_SECONDS)
+    assert worst == pytest.approx(
+        BARYCENTRIC_MINUS_GEOCENTRIC_MAX_SECONDS + TDB_MINUS_UTC_FALLBACK_SECONDS
+    )
     assert 500.0 < worst < 600.0
 
 

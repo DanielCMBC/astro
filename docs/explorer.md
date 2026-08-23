@@ -30,7 +30,7 @@ finest frame whose `engage_radius` contains it.
 ```python
 @property
 def active_frame(self):
-    if self.system is not None and self.system.contains(self._camera_pc):
+    if self.system is not None and self.system.contains(self._camera_absolute_pc):
         return self.system
     return self.universe
 ```

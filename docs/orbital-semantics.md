@@ -76,24 +76,86 @@ flavour it is:
 | Scale | Offset to JD | Ambiguity if assumed BJD_TDB |
 |---|---|---|
 | `BJD_TDB` | 0 | 0 s |
-| `HJD_UTC` | 0 | up to 549 s |
+| `HJD_UTC` | 0 | up to ~77 s |
+| `JD_UTC` | 0 | up to ~568 s |
 | `BKJD` (Kepler) | +2454833.0 | 0 s |
 | `BTJD` (TESS) | +2457000.0 | 0 s |
-| `JD_UNSPECIFIED` | 0 | up to 549 s |
+| `JD_UNSPECIFIED` | 0 | up to ~568 s |
 
-The two ambiguities are of very different sizes and worth separating:
+The ambiguities are of very different sizes and must be kept apart — one
+constant for "not barycentric" would be wrong for both cases it covered:
 
-* **barycentric vs heliocentric** is up to ~480 s, because the Sun moves up
-  to 1.6 million km from the solar-system barycentre;
-* **TDB vs UTC** is the accumulated leap seconds, 69.184 s;
+* **heliocentric vs barycentric** is only ~8 s. It is the Sun's own motion
+  about the solar-system barycentre, up to 1.6 million km, which is about
+  five light-seconds. An HJD has *already* removed the Earth's orbital
+  light time, so this small residual is all it still owes;
+* **geocentric vs barycentric** is ~499 s — one AU of light travel, the
+  familiar "8 minutes". This is the Earth's orbital displacement, and it is
+  what a plain, unlabelled JD carries. It is roughly sixty times the
+  heliocentric term, so `HJD_UTC` and `JD_UTC` cannot share a bound;
+* **TDB vs UTC** is `(TT - UTC) + (TDB - TT)`, currently about 69.184 s;
 * **mission offsets** are 13 and 18 *years*. Ignoring one is not a rounding
   error, which is why they get a type rather than a comment.
+
+`JD_UNSPECIFIED` takes the `JD_UTC` bound, not the `HJD_UTC` one: a plain
+geocentric JD is a live reading of an unlabelled archive date, so the
+conservative choice is the larger of the two.
+
+### TDB - UTC is a function of the date, not a constant
+
+The bounds in the table are quoted for the present era. The leap-second
+term is not a constant of nature: it steps whenever IERS announces one, and
+`TDB - TT` carries a periodic relativistic term of order a millisecond that
+is never exactly zero. A literal `69.184` in the propagation path would
+freeze a 2026 relationship into the physics and would silently go stale.
+
+So `tdb_minus_utc_seconds(jd)` asks astropy, which owns both the
+leap-second table and the `TDB - TT` series. The difference is taken
+between the two scales' Julian-day *numbering* — via the `jd1`/`jd2` pair,
+so the sub-millisecond term survives — because the two are the same instant
+and subtracting them as times would correctly give zero.
+
+`Epoch.scale_uncertainty_seconds` evaluates it at the epoch's own date, so a
+1990 epoch is charged the twelve fewer leap seconds that actually applied
+then. `TDB_MINUS_UTC_FALLBACK_SECONDS` is used only when there is no date at
+all, or when astropy refuses one; a bad date degrades the precision of a
+stated uncertainty rather than raising inside a render loop.
 
 The archive publishes no machine-readable scale for `pl_orbtper` or
 `pl_tranmid`, so the honest default is `JD_UNSPECIFIED`. Rather than argue
 about whether it matters, `Epoch.phase_uncertainty_fraction` states it: for
 HD 80606 b it is 6e-8 of a revolution, i.e. irrelevant. On an ultra-short
 period planet it would still be small, but it would be stated the same way.
+
+### A mean anomaly needs the date it was quoted at
+
+`M0` alone does not place a planet. The propagation law is
+
+```text
+M(t) = M0 + n (t - t0)
+```
+
+so without `t0` the published angle constrains the orbit at one unstated
+moment and at no other. The catalogue routinely publishes one without the
+other, so the two travel together as a `MeanAnomalyAnchor`:
+
+```python
+anchor.is_known   # M0 was published
+anchor.is_dated   # M0 and t0 were both published - the only usable state
+```
+
+`mean_anomaly_at_epoch` is an angle in radians and never occupies an epoch
+slot; `epoch_mean_anomaly` is its reference date and does. `Epoch.is_dated`
+tests the *unit*, so an angle miscast as an epoch is still refused a Julian
+date.
+
+An undated `M0` reports `PhaseKnowledge.REFERENCE_ANOMALY_UNDATED` and
+`PhaseProvenance.MEAN_ANOMALY_UNDATED`, yields no mean anomaly, and is
+still listed in the orbit-validity block — the measurement is real, it just
+cannot be moved to another date. The previous model returned `M0` verbatim
+for every requested instant, which is a correct position at exactly the
+moment nobody published and wrong at all the others, while reporting itself
+as observationally anchored.
 
 `EpochKind.TRANSIT.needs_argument_of_periapsis` is `True`, because the true
 anomaly at mid-transit is `pi/2 - omega` - so a transit epoch inherits the

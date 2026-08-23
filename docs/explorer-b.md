@@ -138,7 +138,7 @@ it, so selecting a planet cannot perturb the orbit it is describing.
 
 ## Time controls
 
-`TimeControls` owns a barycentric Julian date and hands it to
+`TimeControls` owns a Julian date and hands it to
 `OrbitalElements.phase_at()`. It integrates nothing itself and has no
 notion of "one orbit per animation cycle".
 
@@ -156,6 +156,113 @@ phase reports itself `ASSUMED` regardless.
 The default mode is physical. The normalised educational clock still
 exists and still declares itself non-physical wherever it appears.
 
+### The clock runs on one canonical axis
+
+The date is `epoch_jd`, not `epoch_bjd`. It is a *full Julian date*, and
+nothing in this class certifies it as `BJD_TDB` — so it is not named as
+though it were. Only an epoch published in `BJD_TDB` is displayed under
+that name:
+
+```
+Epoch:             JD 2458882.34400            # scale not stated
+Epoch:             BJD_TDB 2458882.34400       # scale stated
+```
+
+A catalogue time reaches the clock only through `Epoch.canonical_jd`, which
+applies the mission offset:
+
+```
+catalogue epoch
+    ↓
+Epoch + TimeScale
+    ↓  canonical_jd:  BKJD +2454833,  BTJD +2457000
+canonical full JD  +  residual scale uncertainty
+    ↓
+TimeControls.epoch_jd  /  .source_scale  /  .scale_uncertainty_days
+    ↓
+OrbitalElements.phase_at()
+```
+
+`phase_at()` goes through `elements.epoch_of(kind)` for exactly the same
+reason, so both ends of the path are on the same axis. That equivalence is
+the point, and it is tested directly: an epoch of `1000` BKJD and one of
+`2455833` full JD give the same phase at the same instant
+(`test_phase_is_identical_before_and_after_offset_normalisation`).
+
+What the offset cannot absorb is carried rather than discarded. The
+reference-frame light time and the leap seconds need a sky position and a
+light-time to resolve, so `scale_uncertainty_days` reports them — about
+568 s for an unstated scale (the geocentric term, ~499 s, plus leap
+seconds), ~77 s for an `HJD_UTC` one (only the Sun's ~8 s barycentric
+wobble plus leap seconds), zero for a stated barycentric one — and the
+clock says so:
+
+```
+Time-system error: +/- 568 s; the published scale was not stated, so the
+                   offset to BJD_TDB is unresolved
+```
+
+The leap-second half of that residual is evaluated at the epoch's own
+date rather than read from a literal — see *TDB - UTC is a function of the
+date* in `docs/orbital-semantics.md`.
+
+### Which epoch starts the clock
+
+Not "the first one in record order". The ranking is explicit:
+
+1. the selected planet's own constrained epoch — `for_system(records,
+   selected_name=...)`;
+2. any planet's **periastron** epoch;
+3. any planet's **transit** epoch;
+4. the caller's `fallback_jd`.
+
+A periastron epoch outranks a transit epoch because `M = 0` at periastron
+directly, whereas a transit time reaches the mean anomaly through
+`ν = π/2 − ω` and so inherits the argument-of-periastron convention
+ambiguity. Equal-ranked candidates fall back to record order, so the choice
+is deterministic. A `MEAN_ANOMALY_AT_EPOCH` is never a candidate: it is an
+angle in radians, not a date, and `Epoch.is_dated` says so.
+
+## Where the camera is
+
+The camera is held in exactly one of two states, never a hybrid:
+
+| State | Field | Set when |
+|---|---|---|
+| located | `_camera_absolute_pc` | the camera is anywhere at all |
+| detached | `_camera_local` | the camera is inside an unlocated system |
+
+They are mutually exclusive, so the parsec field's invariant — *this is an
+absolute galactic position* — holds unconditionally. An earlier version
+stored the detached camera's AU offset in the parsec field, scaled so the
+arithmetic worked out; it produced correct pictures while quietly making
+one field mean two things. A detached camera really is a
+`FramedPosition([0, 0, 3], SystemFrame[AU])`, so that is what it is.
+
+Absolute navigation is then refused *structurally*. `move_to_pc()`,
+`approach()`, `enter_system()`, `leave_system()`, `path_to_system()` and
+reading `camera_pc` all go through one `_require_located()` guard rather
+than a check copied to each call site. `camera_absolute_pc` is the
+non-raising query, and answers `None` — "nowhere" — rather than the Sun.
+`move_to_local()` is the operation that *is* defined while detached, and
+works in a located frame too.
+
+## What "stable entity id" guarantees
+
+Precisely this: **an entity id is stable while the authoritative catalogue
+key remains unchanged.** A selection therefore survives a scene rebuild, an
+LOD change and a change of display label, because none of those touch the
+key.
+
+It does *not* survive a canonical rename by the catalogue:
+`planet:nasa:K2-18_b` and `planet:nasa:EPIC_201912552_b` are different ids
+for the same planet, and nothing in `data/identity.py` can know that.
+Closing that gap needs a persistent internal entity id — minted locally,
+never derived from a name — with catalogue identifiers and aliases hanging
+off it: NASA canonical name, Gaia `source_id`, SIMBAD identifiers. That
+belongs with the offline synchronised catalogue, because it needs somewhere
+durable to live.
+
 ## Acceptance criteria
 
 | Criterion | Test |
@@ -168,6 +275,13 @@ exists and still declares itself non-physical wherever it appears.
 | every displayed scientific parameter exposes provenance | `test_every_scientific_row_exposes_provenance` |
 | planet selection does not mutate scientific orbit state | `test_building_a_panel_does_not_mutate_the_record` |
 | time control uses physical TimeController | `test_the_clock_drives_the_physical_propagator` |
+| catalogue epochs reach the clock through `Epoch`/`TimeScale` | `test_bkjd_epoch_gets_2454833_day_offset`, `test_btjd_epoch_gets_2457000_day_offset` |
+| `phase_at()` is on the same time axis as the clock | `test_phase_at_uses_same_epoch_scale_as_time_controls`, `test_phase_is_identical_before_and_after_offset_normalisation` |
+| an unstated scale keeps its uncertainty and is not called `BJD_TDB` | `test_jd_unspecified_keeps_scale_uncertainty`, `test_unspecified_jd_is_not_labelled_exact_bjd_tdb` |
+| the starting-epoch policy is explicit and deterministic | `test_the_selected_planet_anchors_the_clock`, `test_a_periastron_epoch_outranks_a_transit_epoch` |
+| a detached camera is a local `FramedPosition`, not a parsec carrier | `test_a_detached_camera_is_a_local_framed_position` |
+| absolute navigation is refused while detached | `test_every_absolute_navigation_method_rejects_detached_mode` |
+| entity ids claim catalogue-key stability, not rename-proofness | `test_entity_ids_are_catalog_key_stable_not_rename_proof` |
 | constrained and assumed phases are visually distinct | `test_an_assumed_phase_is_shown_as_assumed` |
 | selection survives LOD and scene rebuilds | `test_selection_identity_survives_lod_transitions` |
 | async panel updates carry a selection/generation token | `test_a_stale_async_result_is_rejected` |

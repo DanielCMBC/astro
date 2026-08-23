@@ -55,7 +55,7 @@ def frame_camera(scene, aspect: float, *, pitch: float = 1.15, yaw: float = 0.35
 
 def render_system(
     system_slice,
-    time_bjd: float,
+    time_jd: float,
     out_dir: Path,
     *,
     frames: int = 1,
@@ -90,12 +90,12 @@ def render_system(
         # planets', not the viewpoint's.
         first = build_frame_scene(
             system_slice.frame, system_slice.star, system_slice.planets,
-            mean_anomalies=system_slice.mean_anomalies(time_bjd),
+            mean_anomalies=system_slice.mean_anomalies(time_jd),
         )
         camera = frame_camera(first, width / height)
 
         for index in range(max(1, frames)):
-            epoch = time_bjd + (index / max(1, frames)) * span_periods * outer_period
+            epoch = time_jd + (index / max(1, frames)) * span_periods * outer_period
             scene = build_frame_scene(
                 system_slice.frame, system_slice.star, system_slice.planets,
                 mean_anomalies=system_slice.mean_anomalies(epoch),

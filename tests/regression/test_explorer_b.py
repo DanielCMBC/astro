@@ -160,6 +160,127 @@ def test_a_located_system_still_navigates_normally(explorer):
 
 
 # ==========================================================================
+# Review section 5, follow-up: the detached camera is a local position, and
+# absolute navigation is refused structurally rather than per call site
+# ==========================================================================
+
+
+def test_a_detached_camera_is_a_local_framed_position(trappist):
+    """Not an AU offset smuggled through a field that means parsecs."""
+    from astro_explorer.coordinates.system_frame import FrameKind, FramedPosition
+
+    instance = Explorer()
+    instance.open_detached("TRAPPIST-1", trappist.planets, trappist.star)
+
+    local = instance.camera_local
+    assert isinstance(local, FramedPosition)
+    assert local.kind is FrameKind.SYSTEM
+    assert local.frame is instance.system
+    # Three AU out along +Z, in AU, because the frame's unit is AU.
+    assert np.allclose(local.values, [0.0, 0.0, 3.0])
+    assert float(local.magnitude) == pytest.approx(3.0)
+
+    # And the absolute field genuinely holds nothing, rather than a carrier.
+    assert instance.camera_absolute_pc is None
+
+
+def test_a_located_camera_has_no_local_position_and_vice_versa(explorer, trappist):
+    """The two states are mutually exclusive; there is no hybrid."""
+    assert explorer.camera_absolute_pc is not None
+    assert explorer.camera_local is None
+
+    detached = Explorer()
+    detached.open_detached("TRAPPIST-1", trappist.planets, trappist.star)
+    assert detached.camera_absolute_pc is None
+    assert detached.camera_local is not None
+
+
+def test_asking_a_detached_camera_where_it_is_absolutely_refuses(trappist):
+    instance = Explorer()
+    instance.open_detached("TRAPPIST-1", trappist.planets, trappist.star)
+
+    with pytest.raises(UnknownSystemPositionError):
+        instance.camera_pc
+
+    # The non-raising query says "nowhere" rather than "the Sun".
+    assert instance.camera_absolute_pc is None
+
+
+def test_every_absolute_navigation_method_rejects_detached_mode(trappist):
+    """One guard, applied at every entry point into absolute space."""
+    instance = Explorer()
+    instance.open_detached("TRAPPIST-1", trappist.planets, trappist.star)
+
+    with pytest.raises(UnknownSystemPositionError):
+        instance.move_to_pc([1.0, 2.0, 3.0])
+    with pytest.raises(UnknownSystemPositionError):
+        instance.approach(0.5)
+    with pytest.raises(UnknownSystemPositionError):
+        instance.enter_system()
+    with pytest.raises(UnknownSystemPositionError):
+        instance.leave_system()
+    with pytest.raises(UnknownSystemPositionError):
+        instance.path_to_system(4)
+
+    # None of them moved the camera anywhere.
+    assert instance.camera_absolute_pc is None
+    assert np.allclose(instance.camera_local.values, [0.0, 0.0, 3.0])
+
+
+def test_a_detached_camera_moves_within_its_own_frame(trappist):
+    """Local movement is the operation that *is* defined here."""
+    instance = Explorer()
+    instance.open_detached("TRAPPIST-1", trappist.planets, trappist.star)
+
+    instance.move_to_local([0.0, 0.0, 0.5])
+    assert np.allclose(instance.camera_local.values, [0.0, 0.0, 0.5])
+    assert instance.camera_position.magnitude == pytest.approx(0.5)
+    assert instance.camera.distance == pytest.approx(0.5)
+    # Still nowhere in particular.
+    assert instance.camera_absolute_pc is None
+    assert instance.distance_to_system_pc() is None
+
+
+def test_moving_locally_in_a_located_frame_still_yields_an_absolute_position(explorer):
+    """The same call works in a located frame, and keeps absolute truth."""
+    explorer.enter_system()
+    explorer.move_to_local([0.0, 0.0, 2.0])
+
+    assert explorer.camera_local is None
+    assert explorer.camera_absolute_pc is not None
+    assert explorer.camera_position.magnitude == pytest.approx(2.0)
+
+
+def test_focusing_a_located_system_after_a_detached_one_recovers_a_position(
+    trappist, hd80606
+):
+    """A local offset is never lifted into absolute space; the camera is placed."""
+    instance = Explorer()
+    instance.open_detached("TRAPPIST-1", trappist.planets, trappist.star)
+    instance.focus("HD 80606", hd80606.planets, hd80606.star)
+
+    assert not instance.detached
+    assert instance.camera_local is None
+    assert instance.camera_absolute_pc is not None
+    # Placed at a plain standoff from the new host, not at the Sun and not
+    # three AU from it either.
+    assert instance.distance_to_system_pc() == pytest.approx(20.0)
+    instance.enter_system()
+    assert instance.view.value == "SYSTEM"
+
+
+def test_the_detached_guard_is_written_once(trappist):
+    """Review section 6: three consecutive identical guards, reduced to one."""
+    import inspect
+
+    from astro_explorer.app import explorer as module
+
+    source = inspect.getsource(module.Explorer.approach)
+    assert source.count("UnknownSystemPositionError") == 0
+    assert source.count("_require_located") == 1
+
+
+# ==========================================================================
 # Review section 7: stable entity keys
 # ==========================================================================
 
@@ -191,6 +312,30 @@ def test_an_unnamed_entity_has_no_id():
     assert star_id(float("nan")) is None
     with pytest.raises(ValueError):
         EntityId(EntityKind.PLANET, Catalog.NASA, "")
+
+
+def test_entity_ids_are_catalog_key_stable_not_rename_proof():
+    """Review section 7: state the guarantee that actually holds.
+
+    An id survives a scene rebuild, an LOD change and a change of display
+    label, because it is derived from the catalogue key and none of those
+    touch it. It does *not* survive the catalogue renaming its canonical
+    key, and claiming otherwise would be the kind of promise that breaks
+    silently.
+    """
+    from astro_explorer.data import identity as module
+
+    # Same key, any number of times, any display label: same id.
+    assert planet_id("HD 80606 b") == planet_id("HD 80606 b")
+    assert planet_id("  HD 80606 b  ") == planet_id("HD 80606 b")
+
+    # A genuine canonical rename produces a different id, and nothing here
+    # can know the two designate one planet.
+    assert planet_id("K2-18 b") != planet_id("EPIC 201912552 b")
+
+    # The limitation is written down where someone will find it.
+    assert "catalogue key" in module.__doc__
+    assert "rename-proof" in module.__doc__
 
 
 def test_records_expose_their_entity_id(hd80606):
@@ -452,24 +597,24 @@ def test_no_row_ever_prints_the_word_nan(trappist):
 
 def test_time_controls_start_at_a_published_epoch(hd80606):
     controls = TimeControls.for_system(hd80606.planets)
-    assert controls.epoch_bjd == pytest.approx(HD80606_PERIASTRON)
+    assert controls.epoch_jd == pytest.approx(HD80606_PERIASTRON)
 
 
 def test_time_controls_fall_back_when_no_epoch_exists(trappist):
     controls = TimeControls.for_system(trappist.planets)
     # Any date is as good as another; the phase reports itself as assumed.
-    assert controls.epoch_bjd > 0
+    assert controls.epoch_jd > 0
 
 
 def test_playing_advances_the_clock_at_the_chosen_rate():
-    controls = TimeControls(epoch_bjd=2450000.0, rate_days_per_second=7.0)
+    controls = TimeControls(epoch_jd=2450000.0, rate_days_per_second=7.0)
     controls.play()
     controls.advance(3.0)
     assert controls.offset_days() == pytest.approx(21.0)
 
 
 def test_pausing_stops_the_clock():
-    controls = TimeControls(epoch_bjd=2450000.0, rate_days_per_second=1.0)
+    controls = TimeControls(epoch_jd=2450000.0, rate_days_per_second=1.0)
     controls.play()
     controls.advance(5.0)
     controls.pause()
@@ -478,7 +623,7 @@ def test_pausing_stops_the_clock():
 
 
 def test_stepping_works_while_paused():
-    controls = TimeControls(epoch_bjd=2450000.0)
+    controls = TimeControls(epoch_jd=2450000.0)
     assert not controls.playing
     controls.step_days(10.0)
     assert controls.offset_days() == pytest.approx(10.0)
@@ -486,13 +631,13 @@ def test_stepping_works_while_paused():
 
 def test_stepping_by_a_fraction_of_a_period(hd80606):
     period = hd80606.planet("HD 80606 b").elements.period.value_in(u.day)
-    controls = TimeControls(epoch_bjd=HD80606_PERIASTRON)
+    controls = TimeControls(epoch_jd=HD80606_PERIASTRON)
     controls.step_fraction(period, 0.5)
     assert controls.offset_days() == pytest.approx(period / 2.0)
 
 
 def test_a_missing_period_makes_a_fractional_step_a_no_op():
-    controls = TimeControls(epoch_bjd=2450000.0)
+    controls = TimeControls(epoch_jd=2450000.0)
     controls.step_fraction(None, 0.5)
     controls.step_fraction(0.0, 0.5)
     assert controls.offset_days() == 0.0
@@ -504,9 +649,9 @@ def test_the_clock_drives_the_physical_propagator(hd80606):
     period = record.elements.period.value_in(u.day)
     controls = TimeControls.for_system(hd80606.planets)
 
-    at_periastron = record.elements.phase_at(controls.epoch_bjd).mean_anomaly
+    at_periastron = record.elements.phase_at(controls.epoch_jd).mean_anomaly
     controls.step_fraction(period, 0.5)
-    at_apoapsis = record.elements.phase_at(controls.epoch_bjd).mean_anomaly
+    at_apoapsis = record.elements.phase_at(controls.epoch_jd).mean_anomaly
 
     assert at_periastron == pytest.approx(0.0, abs=1e-9)
     assert at_apoapsis == pytest.approx(np.pi, abs=1e-6)
@@ -517,14 +662,14 @@ def test_a_full_period_returns_to_the_same_phase(hd80606):
     period = record.elements.period.value_in(u.day)
     controls = TimeControls.for_system(hd80606.planets)
 
-    first = record.elements.phase_at(controls.epoch_bjd).mean_anomaly
+    first = record.elements.phase_at(controls.epoch_jd).mean_anomaly
     controls.step_days(period)
-    later = record.elements.phase_at(controls.epoch_bjd).mean_anomaly
+    later = record.elements.phase_at(controls.epoch_jd).mean_anomaly
     assert np.mod(later - first + np.pi, 2 * np.pi) - np.pi == pytest.approx(0.0, abs=1e-9)
 
 
 def test_reset_returns_to_the_starting_epoch():
-    controls = TimeControls(epoch_bjd=2450000.0)
+    controls = TimeControls(epoch_jd=2450000.0)
     controls.step_days(500.0)
     controls.reset()
     assert controls.offset_days() == 0.0
@@ -548,7 +693,7 @@ def test_the_normalised_mode_declares_itself_non_physical():
 
 def test_the_phase_dial_wraps_with_the_period(hd80606):
     period = hd80606.planet("HD 80606 b").elements.period.value_in(u.day)
-    controls = TimeControls(epoch_bjd=HD80606_PERIASTRON)
+    controls = TimeControls(epoch_jd=HD80606_PERIASTRON)
     assert controls.phase_fraction(period) == pytest.approx(0.0)
     controls.step_fraction(period, 0.25)
     assert controls.phase_fraction(period) == pytest.approx(0.25)
@@ -563,9 +708,9 @@ def test_the_panel_follows_the_clock(explorer, hd80606):
     period = hd80606.planet("HD 80606 b").elements.period.value_in(u.day)
 
     controls = TimeControls.for_system(hd80606.planets)
-    first = explorer.panel(controls.epoch_bjd)
+    first = explorer.panel(controls.epoch_jd)
     controls.step_fraction(period, 0.5)
-    second = explorer.panel(controls.epoch_bjd)
+    second = explorer.panel(controls.epoch_jd)
 
     assert first is not None and second is not None
     # Same planet, same provenance; only the propagated instant differs.

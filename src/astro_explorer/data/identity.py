@@ -19,6 +19,27 @@ The id is a pure function of the catalogue key, so it can be recomputed at
 any time rather than stored and synchronised. When a Gaia ``source_id`` or
 an internal database key becomes authoritative, ``Catalog.GAIA`` and a new
 ``key`` are all that changes; nothing downstream cares.
+
+What "stable" actually means here
+---------------------------------
+Explorer B review section 7. The guarantee is precisely this:
+
+    an entity id is stable while the authoritative catalogue key remains
+    unchanged.
+
+So a selection survives a scene rebuild, a level-of-detail change and a
+change of *display* label, because none of those touch the key. It does
+**not** survive a true canonical rename by the catalogue: ``planet:nasa:K2-18_b``
+and ``planet:nasa:EPIC_201912552_b`` are different ids for the same planet,
+and nothing in this module can know that.
+
+Closing that gap needs a layer this module does not have and should not
+grow: a persistent internal entity id, minted locally and never derived
+from a name, with catalogue identifiers and aliases - NASA canonical name,
+Gaia ``source_id``, SIMBAD identifiers - hanging off it as attributes. That
+belongs with the offline synchronised catalogue in
+:mod:`astro_explorer.data.synchronizer`, because it needs somewhere durable
+to live. Until then the honest claim is the one above, not "rename-proof".
 """
 
 from __future__ import annotations

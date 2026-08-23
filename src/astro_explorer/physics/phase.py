@@ -127,12 +127,22 @@ class PhaseProvenance(str, Enum):
     """A transit epoch with ``omega`` normalised to zero for display."""
 
     MEAN_ANOMALY_AT_EPOCH = "MEAN_ANOMALY_AT_EPOCH"
+    """``M0`` *and* the reference date it applies at were published."""
+
+    MEAN_ANOMALY_UNDATED = "MEAN_ANOMALY_UNDATED"
+    """``M0`` was published without the epoch it refers to.
+
+    Not a phase at all, and named rather than folded into UNKNOWN so the
+    panel can say which measurement exists and why it does not place the
+    planet.
+    """
+
     ASSUMED_ZERO_PHASE = "ASSUMED_ZERO_PHASE"
     UNKNOWN = "UNKNOWN"
 
     @property
     def anchor(self) -> PhaseAnchor:
-        if self is PhaseProvenance.UNKNOWN:
+        if self in (PhaseProvenance.UNKNOWN, PhaseProvenance.MEAN_ANOMALY_UNDATED):
             return PhaseAnchor.NONE
         if self is PhaseProvenance.ASSUMED_ZERO_PHASE:
             return PhaseAnchor.ASSUMED
@@ -143,6 +153,7 @@ class PhaseProvenance(str, Enum):
         return {
             PhaseProvenance.PERIASTRON_EPOCH: AnomalyMapping.DIRECT,
             PhaseProvenance.MEAN_ANOMALY_AT_EPOCH: AnomalyMapping.DIRECT,
+            PhaseProvenance.MEAN_ANOMALY_UNDATED: AnomalyMapping.NONE,
             PhaseProvenance.TRANSIT_EPOCH: AnomalyMapping.CONJUNCTION_NORMALIZED,
             PhaseProvenance.TRANSIT_CONJUNCTION_NORMALIZED: (
                 AnomalyMapping.CONJUNCTION_NORMALIZED
@@ -159,7 +170,10 @@ class PhaseProvenance(str, Enum):
             PhaseProvenance.TRANSIT_CONJUNCTION_NORMALIZED: (
                 "published transit time, argument of periastron normalised to 0 deg"
             ),
-            PhaseProvenance.MEAN_ANOMALY_AT_EPOCH: "published mean anomaly at epoch",
+            PhaseProvenance.MEAN_ANOMALY_AT_EPOCH: "published mean anomaly at a published epoch",
+            PhaseProvenance.MEAN_ANOMALY_UNDATED: (
+                "published mean anomaly, reference epoch not published"
+            ),
             PhaseProvenance.ASSUMED_ZERO_PHASE: "no epoch published; phase assumed",
             PhaseProvenance.UNKNOWN: "no phase available",
         }[self]

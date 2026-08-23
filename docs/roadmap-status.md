@@ -164,9 +164,44 @@ Review sections 5, 7 and 13. See [`explorer-b.md`](explorer-b.md).
 | constrained vs assumed visually distinct | done - `Emphasis` |
 | async updates carry a generation token | done - `Explorer.is_current` |
 
+### Explorer B review follow-up
+
+The Explorer B review passed the work with one scientific fix required: the
+`TimeScale` metadata existed but the propagation path bypassed it.
+
+| Item | Status |
+|---|---|
+| P0 `TimeControls` and `phase_at` honour `Epoch`/`TimeScale` | done - `Epoch.canonical_jd` is the only route in; the clock field is `epoch_jd`, with `source_scale` and `scale_uncertainty_days` alongside |
+| P0 BKJD/BTJD regression tests | done - `tests/physics/test_time_scale.py` |
+| P1 stop overloading `_camera_pc` in detached mode | done - `_camera_absolute_pc` and `_camera_local`, mutually exclusive |
+| P1 forbid absolute navigation while detached | done - one `_require_located()` guard on every entry point |
+| P2 remove duplicated detached guards | done - `approach()` had three identical guards; now none of its own |
+| P2 document entity ids as catalogue-key-stable | done - `data/identity.py` module docstring |
+| P2 define the starting-epoch policy | done - selected planet, then periastron, then transit, then fallback |
+
+A second follow-up review corrected the time-uncertainty model itself and
+asked for one rename:
+
+| Item | Status |
+|---|---|
+| P0 split the HJD and JD reference-frame constants | done - `BARYCENTRIC_MINUS_HELIOCENTRIC_MAX_SECONDS` (8 s, the Sun's barycentric wobble) and `BARYCENTRIC_MINUS_GEOCENTRIC_MAX_SECONDS` (499 s, one AU of light travel) are separate; one shared 480 s constant had charged an HJD the Earth's orbital light time it had already removed |
+| P0 scale-specific uncertainty tests | done - `HJD_UTC` is ~77 s, `JD_UTC` ~568 s, and `JD_UNSPECIFIED` takes the conservative `JD_UTC` bound |
+| P1 rename `physics.TimeController` off the `_bjd` names | done - `epoch_jd`, `simulated_jd()`, `now_jd`; `epoch_bjd` and `simulated_bjd()` survive as deprecated aliases that warn |
+
+A final time-layer review accepted the split and raised two more:
+
+| Item | Status |
+|---|---|
+| P0 a mean anomaly needs the epoch it was quoted at | done - `MeanAnomalyAnchor` pairs `M0` with `t0`; an undated `M0` reports `REFERENCE_ANOMALY_UNDATED` and yields no position, where it previously returned `M0` verbatim at every requested date |
+| P1 stop treating `TDB - UTC` as a permanent constant | done - `tdb_minus_utc_seconds(jd)` delegates to astropy's leap-second table and `TDB - TT` series; `Epoch.scale_uncertainty_seconds` evaluates it at the epoch's own date, and the literal survives only as a no-date fallback |
+| P2 forbid new production callsites of `as_bjd()` | done - `test_no_new_production_callsite_uses_as_bjd` scans `src/` and allows only the definition |
+| P2 keep the HJD bound at 8 s | kept - Eastman/Siverd/Gaudi quote errors as large as ~8 s, so the conservative bound stands rather than a 5.3 s displacement estimate |
+
 Deferred by review section 6: separating `active_coordinate_frame` from a
 `presentation_state`, which is wanted before the final timed free-flight
-camera and explicitly does not block Explorer B.
+camera and explicitly does not block Explorer B. A persistent internal
+entity id with catalogue aliases (Gaia `source_id`, SIMBAD) is deferred to
+the database/synchronisation work, which is the layer that can store it.
 
 ## Legacy prototype
 

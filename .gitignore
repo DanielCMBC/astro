@@ -17,6 +17,7 @@ Exoplanet_Analyzer/
 # Local runtime state
 exoplanet_analyzer.log
 renders/
+artifacts/
 *.tmp
 *.feather.tmp
 

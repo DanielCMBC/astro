@@ -236,15 +236,35 @@ def test_normalized_mode_gives_every_planet_the_same_period(state):
 
 def test_real_time_mode_requires_a_date(state):
     controller = TimeController(mode=TimeMode.REAL)
-    with pytest.raises(ValueError, match="BJD"):
-        controller.simulated_bjd(0.0)
+    with pytest.raises(ValueError, match="Julian date"):
+        controller.simulated_jd(0.0)
+
+
+def test_the_old_bjd_names_still_work_but_warn():
+    """Follow-up review section 4: renamed, with a grace period.
+
+    The clock's origin is whatever full Julian day it was handed; nothing
+    here makes it exact BJD_TDB, so the ``_bjd`` names overclaimed. They
+    survive only long enough for an out-of-tree caller to see the warning.
+    """
+    controller = TimeController(mode=TimeMode.SCALED, epoch_jd=2458882.344)
+
+    with pytest.deprecated_call():
+        assert controller.epoch_bjd == pytest.approx(2458882.344)
+    with pytest.deprecated_call():
+        controller.epoch_bjd = 2451545.0
+    assert controller.epoch_jd == pytest.approx(2451545.0)
+
+    with pytest.deprecated_call():
+        legacy = controller.simulated_bjd(10.0)
+    assert legacy == pytest.approx(controller.simulated_jd(10.0))
 
 
 def test_transit_epoch_yields_a_computable_position(state):
     record = state.record("Test b")
     assert record.elements.can_compute_current_position
     controller = TimeController(mode=TimeMode.SCALED)
-    anomaly, assumed = controller.mean_anomaly(record.elements, 0.0, now_bjd=None)
+    anomaly, assumed = controller.mean_anomaly(record.elements, 0.0, now_jd=None)
     assert anomaly is not None
     assert not assumed
 

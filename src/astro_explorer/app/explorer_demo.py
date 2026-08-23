@@ -189,11 +189,11 @@ def main(argv=None) -> int:
     controls = TimeControls.for_system(system.planets)
     if args.time is not None:
         controls.seek(args.time, rebase=True)
-    elif args.host in DEFAULT_EPOCHS and any(r.elements.epochs for r in system.planets):
+    elif args.host in DEFAULT_EPOCHS and any(r.elements.dated_epochs for r in system.planets):
         pass  # for_system already picked a published epoch
     else:
         controls.seek(DEFAULT_EPOCHS.get(args.host, 2457000.0), rebase=True)
-    epoch = controls.epoch_bjd
+    epoch = controls.epoch_jd
     print("Hosts placed:      {0}".format(len(explorer.targets)))
     skipped = getattr(explorer, "skipped_hosts", [])
     if skipped:

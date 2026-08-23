@@ -28,18 +28,18 @@ __all__ = ["main", "report", "render_phases"]
 HD80606B_PERIASTRON = 2458882.344
 
 
-def report(system_slice, time_bjd: float) -> str:
+def report(system_slice, time_jd: float) -> str:
     """The scientific chain, as text."""
     lines = ["=" * 74, "VERTICAL SLICE: {0}".format(system_slice.frame.host_name), "=" * 74, ""]
     lines.extend(system_slice.describe_provenance())
     for record in system_slice.planets:
         lines.append("")
         lines.append("-" * 74)
-        lines.extend(system_slice.describe_orbit(record, time_bjd))
+        lines.extend(system_slice.describe_orbit(record, time_jd))
     return "\n".join(lines)
 
 
-def kepler_second_law_table(system_slice, record, time_bjd: float, intervals: int = 12) -> str:
+def kepler_second_law_table(system_slice, record, time_jd: float, intervals: int = 12) -> str:
     """Equal time steps and the distance covered in each.
 
     The point of the table is that the *areas* are equal while the arc
@@ -53,7 +53,7 @@ def kepler_second_law_table(system_slice, record, time_bjd: float, intervals: in
         return "no period published; Kepler's second law cannot be demonstrated"
 
     substeps = 200
-    times = time_bjd + np.linspace(0.0, period, intervals * substeps + 1)
+    times = time_jd + np.linspace(0.0, period, intervals * substeps + 1)
     positions = np.array([system_slice.state(record, t).position for t in times])
 
     areas = swept_area(positions).reshape(intervals, substeps).sum(axis=1)
@@ -78,7 +78,7 @@ def kepler_second_law_table(system_slice, record, time_bjd: float, intervals: in
     return "\n".join(lines)
 
 
-def render_phases(system_slice, record, time_bjd: float, out_dir: Path, phases: int = 24):
+def render_phases(system_slice, record, time_jd: float, out_dir: Path, phases: int = 24):
     """Render the orbit with equal-time phase markers. Returns the file path."""
     from ..rendering.camera import Camera
     from ..rendering.gl_backend import GLRenderer, RenderSettings
@@ -89,7 +89,7 @@ def render_phases(system_slice, record, time_bjd: float, out_dir: Path, phases: 
         system_slice.frame,
         system_slice.star,
         system_slice.planets,
-        mean_anomalies=system_slice.mean_anomalies(time_bjd),
+        mean_anomalies=system_slice.mean_anomalies(time_jd),
     )
     if not scene.orbits:
         return None
@@ -99,7 +99,7 @@ def render_phases(system_slice, record, time_bjd: float, out_dir: Path, phases: 
     extent = float(np.linalg.norm(points - centre, axis=1).max())
 
     for index in range(phases):
-        state = system_slice.state(record, time_bjd + (index / phases) * period)
+        state = system_slice.state(record, time_jd + (index / phases) * period)
         if state is None:
             break
         scene.planets.append(
