@@ -518,8 +518,9 @@ def orientation_guides(
         )
     if node_known:
         overlay.annotations.append(
-            "Ascending node: {0} (measured).".format(
-                node.to(u.deg).format(with_status=False)
+            "Ascending node: {0} ({1}).".format(
+                node.to(u.deg).format(with_status=False),
+                _provenance_word(elements.longitude_of_ascending_node),
             )
         )
     else:

@@ -215,10 +215,14 @@ def test_zone_draw_restores_gl_state(renderer):
     camera = Camera(target=np.zeros(3), distance=6.0, yaw=0.0, pitch=0.0, aspect=320 / 240)
 
     renderer.ctx.line_width = 1.0
-    renderer.ctx.depth_mask = True
+    renderer._target.depth_mask = True
     renderer.render(zone_scene, camera)
 
-    assert renderer.ctx.depth_mask is True
+    # Read the mask back off the framebuffer that owns it. Asserting this
+    # on ``renderer.ctx`` would pass no matter what the pass did: ModernGL's
+    # Context has no depth_mask, so the assignment above would simply create
+    # a Python attribute and the assertion would read its own setup back.
+    assert renderer._target.depth_mask is True
     assert renderer.ctx.line_width == pytest.approx(1.0)
 
     # And behaviourally: depth testing still hides an occluded body, which
@@ -483,3 +487,157 @@ def test_labels_can_be_composited_onto_a_frame(renderer):
     # Text adds lit pixels without touching the original array.
     assert _lit_pixels(labelled) > _lit_pixels(image)
     assert not np.array_equal(labelled, image)
+
+
+# ==========================================================================
+# The overlay pass state contract (C2 follow-up)
+# ==========================================================================
+
+
+def test_depth_mask_belongs_to_the_framebuffer_not_the_context():
+    """Guard against writing the depth mask where it does nothing.
+
+    ModernGL exposes ``depth_mask`` on Framebuffer. Context does not have
+    it, and because a Context accepts arbitrary attributes, the mistake is
+    silent in both directions: ``ctx.depth_mask = False`` leaves depth
+    writes on, and a later ``assert ctx.depth_mask is True`` reads the
+    inert attribute back and passes. The overlay passes depend on the mask
+    actually being off, so pin where it lives.
+    """
+    assert hasattr(moderngl.Framebuffer, "depth_mask")
+    assert not hasattr(moderngl.Context, "depth_mask")
+
+
+def test_overlay_passes_actually_disable_depth_writes(renderer):
+    """Inside the pass the mask is off; outside it is back on."""
+    observed = []
+
+    with renderer._overlay_pass("probe"):
+        observed.append(renderer._target.depth_mask)
+    observed.append(renderer._target.depth_mask)
+
+    assert observed == [False, True]
+
+
+def test_an_overlay_pass_restores_state_even_when_a_draw_raises(renderer):
+    """The restore is in a finally, so a failed draw cannot leak state."""
+    renderer.ctx.line_width = 1.0
+    renderer._target.depth_mask = True
+
+    with pytest.raises(RuntimeError):
+        with renderer._overlay_pass("probe", line_width=7.0):
+            raise RuntimeError("a draw failed")
+
+    assert renderer._target.depth_mask is True
+    assert renderer.ctx.line_width == pytest.approx(1.0)
+    assert renderer._blend_enabled is False
+
+
+def test_an_overlay_pass_entered_with_leaked_state_is_rejected(renderer):
+    """The documented precondition is enforced, not merely written down.
+
+    OVERLAY_ENTRY_STATE says every overlay pass is handed depth writes on
+    and blending off. A pass that leaves either behind is the defect this
+    check exists to name, so entering with it set must fail loudly rather
+    than render a subtly wrong frame.
+    """
+    assert renderer.check_pass_state is True
+
+    renderer._target.depth_mask = False
+    try:
+        with pytest.raises(AssertionError, match="depth writes disabled"):
+            with renderer._overlay_pass("probe"):
+                pass
+    finally:
+        renderer._target.depth_mask = True
+
+    renderer._blend_enabled = True
+    try:
+        with pytest.raises(AssertionError, match="blending enabled"):
+            with renderer._overlay_pass("probe"):
+                pass
+    finally:
+        renderer._blend_enabled = False
+
+
+def test_a_full_frame_leaves_the_documented_entry_state(renderer):
+    """Every pass in a real frame honours the contract end to end."""
+    from astro_explorer.rendering.renderer import RenderGuide, RenderZone
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+    unit = np.stack([np.cos(angle), np.sin(angle), np.zeros_like(angle)], axis=-1)
+    scene = SceneDescription(
+        stars=[RenderStar("S", [0, 0, 0], 0.3, (1, 1, 1))],
+        orbits=[RenderOrbit("o", unit * 2.0)],
+        zones=[RenderZone("hz", unit, unit * 1.5)],
+        guides=[RenderGuide("g", unit * 2.5)],
+    )
+    camera = Camera(target=np.zeros(3), distance=8.0, yaw=0.0, pitch=0.5, aspect=320 / 240)
+
+    renderer.render(scene, camera)
+
+    assert renderer._target.depth_mask is renderer.OVERLAY_ENTRY_STATE["depth_mask"]
+    assert renderer._blend_enabled is renderer.OVERLAY_ENTRY_STATE["blend"]
+    # All three overlay kinds really did draw, so the check above is not
+    # vacuously true of a frame that skipped every pass.
+    assert renderer.last_orbit_draw_calls == 1
+    assert renderer.last_guide_draw_calls == 1
+    assert renderer.last_zone_draw_calls >= 1
+
+
+def test_an_orbit_behind_a_translucent_zone_still_shows_through(renderer):
+    """The behavioural consequence of the depth mask, in pixels.
+
+    ``test_depth_mask_belongs_to_the_framebuffer_not_the_context`` proves the
+    API is used correctly. This proves the rendering that depends on it is
+    correct, which is a different claim and the one that actually matters.
+
+    The arrangement has real depth separation: a translucent zone annulus in
+    front, an orbit ring behind it, drawn in that order. Zones are drawn
+    before orbits, so if the zone pass writes depth, the orbit fails the
+    depth test everywhere the band covers it and disappears entirely.
+
+    That is exactly what the old ``ctx.depth_mask`` bug produced, and it is
+    invisible to any coplanar test - the pre-existing zone/orbit ordering
+    test puts everything at ``z = 0``, where depth writes cannot occlude
+    anything, so it passed throughout.
+
+    The signal is deliberately not a lit-pixel count: the orbit lies inside
+    an already-lit band, so occluding it changes which pixels are lit not
+    how many. The images must differ, and the total luminance must rise.
+    """
+    from astro_explorer.rendering.renderer import RenderZone
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
+
+    def ring(radius: float, z: float) -> np.ndarray:
+        return np.stack(
+            [radius * np.cos(angle), radius * np.sin(angle), np.full_like(angle, z)],
+            axis=-1,
+        )
+
+    # The band is nearer the camera than the orbit it must not hide.
+    zone = RenderZone("hz", ring(1.0, 2.0), ring(3.0, 2.0), color=(0.3, 0.8, 0.5, 0.35))
+    orbit = RenderOrbit("o", ring(2.0, -2.0), color=(1, 1, 1, 1.0))
+    camera = Camera(target=np.zeros(3), distance=40.0, aspect=320 / 240, pitch=0.0)
+
+    zone_only = renderer.render(SceneDescription(zones=[zone]), camera)
+    with_orbit = renderer.render(
+        SceneDescription(zones=[zone], orbits=[orbit]), camera
+    )
+
+    # With depth writes leaking on, these two frames are bit-identical.
+    assert not np.array_equal(zone_only, with_orbit)
+
+    luminance = with_orbit.astype(np.int64).sum() / zone_only.astype(np.int64).sum()
+    assert luminance > 1.01, luminance
+
+    # And the orbit really is behind the band: seen from the other side the
+    # geometry is unchanged, so it must still be visible there too.
+    from_behind = Camera(
+        target=np.zeros(3), distance=40.0, aspect=320 / 240, pitch=0.0, yaw=np.pi
+    )
+    assert not np.array_equal(
+        renderer.render(SceneDescription(zones=[zone]), from_behind),
+        renderer.render(SceneDescription(zones=[zone], orbits=[orbit]), from_behind),
+    )

@@ -18,6 +18,7 @@ module only when it is installed.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -138,6 +139,13 @@ class GLRenderer:
         self._sphere_buffers: dict[int, tuple] = {}
         self._sphere = self._mesh_for(self._default_lod)
         self._build_framebuffer()
+
+        #: Whether overlay passes verify their documented entry state.
+        #: On by default: the check is two comparisons per pass, and the
+        #: bug it catches - a leaked blend or depth-mask - is invisible in
+        #: a single frame and obvious only several passes later.
+        self.check_pass_state = True
+        self._blend_enabled = False
 
         #: Draw calls issued by the last frame, for the batching tests.
         self.last_planet_draw_calls = 0
@@ -266,6 +274,88 @@ class GLRenderer:
 
         vao = self.ctx.vertex_array(program, content, ebo)
         return vao, buffer
+
+    # -- overlay pass state contract -------------------------------------
+    @property
+    def _target(self):
+        """The framebuffer currently being drawn into.
+
+        Depth-mask state belongs to the framebuffer in ModernGL, not to the
+        context, so state-scoping code has to reach it through here rather
+        than through ``self.ctx``.
+        """
+        return self._msaa or self._resolve
+
+    #: The state every overlay pass may assume on entry, and must leave
+    #: behind on exit. The opaque passes - stars and planets - draw under
+    #: exactly these settings, so an overlay that restores them has restored
+    #: the frame's resting state rather than merely its own guess at it.
+    #:
+    #: Depth-mask state is a real framebuffer property and is snapshotted
+    #: and restored. Blend enablement is not queryable through ModernGL, so
+    #: for blending this stays a *precondition* rather than a snapshot, and
+    #: is enforced by :meth:`_assert_overlay_entry_state` under
+    #: ``check_pass_state`` so that a future pass which leaves blending on
+    #: fails a test rather than silently tinting the next frame.
+    OVERLAY_ENTRY_STATE = {"depth_mask": True, "blend": False}
+
+    def _assert_overlay_entry_state(self, name: str) -> None:
+        """Check the documented precondition before an overlay pass runs.
+
+        The depth mask is read back from the framebuffer that owns it.
+        Blend *enablement* is not exposed by ModernGL at all, so it is
+        mirrored as it is written, and written only inside
+        :meth:`_overlay_pass`. A pass that returned without restoring
+        either is exactly the leak this check is looking for.
+        """
+        if not self.check_pass_state:
+            return
+        if bool(self._target.depth_mask) is not self.OVERLAY_ENTRY_STATE["depth_mask"]:
+            raise AssertionError(
+                "overlay pass {0!r} entered with depth writes disabled; "
+                "a previous pass did not restore OVERLAY_ENTRY_STATE".format(name)
+            )
+        if self._blend_enabled is not self.OVERLAY_ENTRY_STATE["blend"]:
+            raise AssertionError(
+                "overlay pass {0!r} entered with blending enabled; "
+                "a previous pass did not restore OVERLAY_ENTRY_STATE".format(name)
+            )
+
+    @contextmanager
+    def _overlay_pass(self, name: str, *, line_width: float | None = None):
+        """Scope one translucent overlay pass over the opaque frame.
+
+        Overlays - zones, orbit paths, orientation guides - are all drawn
+        the same way: blended, with depth writes off so that none of them
+        occludes another, and with the pass's own line width. They also all
+        owe the next pass the same thing, which is the state they were
+        handed.
+
+        Centralising that here is what makes the contract in
+        :attr:`OVERLAY_ENTRY_STATE` real. Three passes restoring the
+        defaults by hand is three chances to forget one; a single scope that
+        restores on the way out - including when a draw raises - is one.
+        """
+        import moderngl
+
+        self._assert_overlay_entry_state(name)
+
+        target = self._target
+        previous_line_width = self.ctx.line_width
+        previous_depth_mask = target.depth_mask
+        if line_width is not None:
+            self.ctx.line_width = line_width
+        self.ctx.enable(moderngl.BLEND)
+        self._blend_enabled = True
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        target.depth_mask = False
+        try:
+            yield
+        finally:
+            self.ctx.line_width = previous_line_width
+            target.depth_mask = previous_depth_mask
+            self.ctx.disable(moderngl.BLEND)
+            self._blend_enabled = False
 
     # -- drawing ---------------------------------------------------------
     def render(self, scene: SceneDescription, camera: Camera, *, time: float = 0.0) -> np.ndarray:
@@ -412,30 +502,21 @@ class GLRenderer:
 
         program = self._program("orbit")
         program["u_view_projection"].write(view_projection)
-        previous_line_width = self.ctx.line_width
-        self.ctx.line_width = self.settings.orbit_line_width
         # Orbit paths are translucent overlays and must not occlude one
         # another, so depth writes are off while they are drawn.
-        self.ctx.enable(moderngl.BLEND)
-        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-        self.ctx.depth_mask = False
+        with self._overlay_pass("orbits", line_width=self.settings.orbit_line_width):
+            buffer = self.ctx.buffer(vertices.tobytes())
+            index_buffer = self.ctx.buffer(indices.tobytes())
+            layout, names = self._binding(program, self._ORBIT_FIELDS)
+            vao = self.ctx.vertex_array(
+                program, [(buffer, layout, *names)], index_buffer
+            )
+            vao.render(moderngl.LINES)
+            self.last_orbit_draw_calls = 1
 
-        buffer = self.ctx.buffer(vertices.tobytes())
-        index_buffer = self.ctx.buffer(indices.tobytes())
-        layout, names = self._binding(program, self._ORBIT_FIELDS)
-        vao = self.ctx.vertex_array(
-            program, [(buffer, layout, *names)], index_buffer
-        )
-        vao.render(moderngl.LINES)
-        self.last_orbit_draw_calls = 1
-
-        vao.release()
-        buffer.release()
-        index_buffer.release()
-
-        self.ctx.line_width = previous_line_width
-        self.ctx.depth_mask = True
-        self.ctx.disable(moderngl.BLEND)
+            vao.release()
+            buffer.release()
+            index_buffer.release()
 
     def _draw_zones(self, scene, view_projection) -> None:
         """Every zone as one triangle draw plus one line draw.
@@ -448,11 +529,11 @@ class GLRenderer:
         fades out with no visible limit would make a hard boundary look
         like a preference.
 
-        Both draws happen inside one scoped pass. Depth writes stay off - a
-        zone is an overlay lying in the reference plane, and orbits that
-        pass through it must remain visible on both sides - and every state
-        this pass changed is restored before it returns, so nothing leaks
-        into the orbit pass that follows.
+        Both draws happen inside one :meth:`_overlay_pass`. Depth writes
+        stay off - a zone is an overlay lying in the reference plane, and
+        orbits that pass through it must remain visible on both sides - and
+        that scope restores :attr:`OVERLAY_ENTRY_STATE` on the way out, so
+        nothing leaks into the orbit pass that follows.
         """
         import moderngl
 
@@ -468,36 +549,30 @@ class GLRenderer:
         program["u_view_projection"].write(view_projection)
         layout, names = self._binding(program, self._ZONE_FIELDS)
 
-        previous_line_width = self.ctx.line_width
-        self.ctx.enable(moderngl.BLEND)
-        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-        self.ctx.depth_mask = False
-
         draws = 0
-        for data, index_data, primitive in (
-            (vertices, indices, moderngl.TRIANGLES),
-            (edge_vertices, edge_indices, moderngl.LINES),
-        ):
-            if index_data.size == 0:
-                continue
-            if primitive is moderngl.LINES:
-                self.ctx.line_width = self.settings.zone_edge_width
+        with self._overlay_pass("zones"):
+            for data, index_data, primitive in (
+                (vertices, indices, moderngl.TRIANGLES),
+                (edge_vertices, edge_indices, moderngl.LINES),
+            ):
+                if index_data.size == 0:
+                    continue
+                if primitive is moderngl.LINES:
+                    self.ctx.line_width = self.settings.zone_edge_width
 
-            buffer = self.ctx.buffer(data.tobytes())
-            index_buffer = self.ctx.buffer(index_data.tobytes())
-            vao = self.ctx.vertex_array(program, [(buffer, layout, *names)], index_buffer)
-            vao.render(primitive)
-            draws += 1
+                buffer = self.ctx.buffer(data.tobytes())
+                index_buffer = self.ctx.buffer(index_data.tobytes())
+                vao = self.ctx.vertex_array(
+                    program, [(buffer, layout, *names)], index_buffer
+                )
+                vao.render(primitive)
+                draws += 1
 
-            vao.release()
-            buffer.release()
-            index_buffer.release()
+                vao.release()
+                buffer.release()
+                index_buffer.release()
 
         self.last_zone_draw_calls = draws
-
-        self.ctx.line_width = previous_line_width
-        self.ctx.depth_mask = True
-        self.ctx.disable(moderngl.BLEND)
 
     #: Interleaved layout of the batched zone buffer.
     _ZONE_FIELDS = [
@@ -649,7 +724,8 @@ class GLRenderer:
         normalised for display, so it travels per vertex and survives
         batching.
 
-        Every state this pass changes is restored before it returns.
+        The pass runs inside :meth:`_overlay_pass`, so it both assumes and
+        restores :attr:`OVERLAY_ENTRY_STATE`.
         """
         import moderngl
 
@@ -663,26 +739,19 @@ class GLRenderer:
         program = self._program("orbit")
         program["u_view_projection"].write(view_projection)
 
-        previous_line_width = self.ctx.line_width
-        self.ctx.line_width = self.settings.guide_line_width
-        self.ctx.enable(moderngl.BLEND)
-        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-        self.ctx.depth_mask = False
+        with self._overlay_pass("guides", line_width=self.settings.guide_line_width):
+            buffer = self.ctx.buffer(vertices.tobytes())
+            index_buffer = self.ctx.buffer(indices.tobytes())
+            layout, names = self._binding(program, self._ORBIT_FIELDS)
+            vao = self.ctx.vertex_array(
+                program, [(buffer, layout, *names)], index_buffer
+            )
+            vao.render(moderngl.LINES)
+            self.last_guide_draw_calls = 1
 
-        buffer = self.ctx.buffer(vertices.tobytes())
-        index_buffer = self.ctx.buffer(indices.tobytes())
-        layout, names = self._binding(program, self._ORBIT_FIELDS)
-        vao = self.ctx.vertex_array(program, [(buffer, layout, *names)], index_buffer)
-        vao.render(moderngl.LINES)
-        self.last_guide_draw_calls = 1
-
-        vao.release()
-        buffer.release()
-        index_buffer.release()
-
-        self.ctx.line_width = previous_line_width
-        self.ctx.depth_mask = True
-        self.ctx.disable(moderngl.BLEND)
+            vao.release()
+            buffer.release()
+            index_buffer.release()
 
     def _batch_guides(self, scene):
         """Pack every guide into one vertex array and one index array.

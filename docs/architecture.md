@@ -68,6 +68,39 @@ asserts that those field names stay absent.
 `RenderPlanet` and `RenderStar` reject non-finite positions at construction,
 so an unknown parameter can never reach the GPU as a NaN.
 
+## The overlay pass state contract
+
+The opaque passes — stars and planets — draw with depth writes on and
+blending off. Every overlay pass (zones, orbit paths, orientation guides)
+may **assume** that state on entry and **must** leave it behind on exit:
+
+```python
+GLRenderer.OVERLAY_ENTRY_STATE = {"depth_mask": True, "blend": False}
+```
+
+All three overlays go through one `_overlay_pass()` scope that enables
+blending, turns depth writes off so no overlay occludes another, sets the
+pass's line width, and restores everything on the way out — including when
+a draw raises. Three passes restoring state by hand is three chances to
+forget one.
+
+Two ModernGL details make this worth stating explicitly rather than leaving
+as a convention:
+
+* **`depth_mask` belongs to the `Framebuffer`, not the `Context`.** A
+  `Context` accepts arbitrary attributes, so `ctx.depth_mask = False` sets an
+  inert Python attribute and leaves depth writes enabled — and a test
+  asserting `ctx.depth_mask is True` reads its own setup back and passes.
+  This was a real bug in the C1/C2 backend, invisible to every coplanar
+  test. `test_depth_mask_belongs_to_the_framebuffer_not_the_context` pins
+  where the state lives, and
+  `test_an_orbit_behind_a_translucent_zone_still_shows_through` pins the
+  rendering consequence in pixels.
+* **Blend *enablement* is not queryable.** Depth-mask state is snapshotted
+  and restored from the framebuffer; blending is a precondition tracked as
+  it is written and checked on pass entry, so a leak fails a test rather
+  than silently tinting the next frame.
+
 ## Coordinate frames
 
 A single float32 space cannot hold both parsec- and kilometre-scale

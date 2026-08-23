@@ -23,6 +23,8 @@ So the checklist here is in two halves:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import astropy.units as u
 import numpy as np
 import pytest
@@ -33,7 +35,7 @@ from astro_explorer.physics.orientation import (
     position_from_eccentric_anomaly,
     rotation_perifocal_to_inertial,
 )
-from astro_explorer.provenance import Status, measured
+from astro_explorer.provenance import Status, derived, measured
 from astro_explorer.rendering.renderer import GuideStyle, RenderGuide, SceneDescription
 from astro_explorer.rendering.scene_builder import (
     ORIENTATION_DISCLAIMER,
@@ -589,3 +591,50 @@ def test_the_explorer_draws_guides_for_the_selected_planet(kepler11):
     guided = explorer.scene(2455590.0)
     assert guided.guides
     assert any("Orientation guides" in note for note in guided.annotations)
+
+
+# ==========================================================================
+# C2 follow-ups, carried into the C3 working tree
+# ==========================================================================
+
+
+def test_a_known_node_annotation_uses_its_actual_provenance(frame):
+    """A known node is not necessarily a *measured* one.
+
+    The annotation used to hard-code the word "measured" for any node that
+    was known, which was true only because no path in the catalogue yet
+    produced a derived one. The overlay claims to support the full
+    provenance ladder, so the sentence has to read the parameter rather
+    than assume the top rung of it: a derived node is still drawn solid -
+    it is genuinely constrained - but it must not be *described* as an
+    observation.
+    """
+    elements = _elements(inclination_deg=45.0, node_deg=30.0)
+    elements = replace(
+        elements,
+        longitude_of_ascending_node=derived(
+            np.deg2rad(30.0), u.rad, provenance="test: from a fitted astrometric arc"
+        ),
+    )
+
+    overlay = orientation_guides(elements, frame)
+
+    # Constrained, so still solid ...
+    assert _named(overlay, "ascending-node").style is GuideStyle.SOLID
+    node_note = next(
+        note for note in overlay.annotations if note.startswith("Ascending node:")
+    )
+    # ... but described by what it actually is.
+    assert "Ascending node: 30" in node_note
+    assert "(derived)" in node_note
+    assert "measured" not in node_note
+
+
+def test_a_measured_node_is_still_annotated_measured(frame):
+    """The common case is unchanged by reading provenance properly."""
+    overlay = orientation_guides(_elements(inclination_deg=45.0, node_deg=30.0), frame)
+
+    node_note = next(
+        note for note in overlay.annotations if note.startswith("Ascending node:")
+    )
+    assert "(measured)" in node_note
