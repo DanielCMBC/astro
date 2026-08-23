@@ -138,7 +138,12 @@ def test_no_module_uses_the_wrong_au_to_parsec_factor():
 
 def test_render_primitives_carry_no_scientific_fields():
     """The renderer cannot decide what it is never told."""
-    from astro_explorer.rendering.renderer import RenderOrbit, RenderPlanet, RenderStar
+    from astro_explorer.rendering.renderer import (
+        RenderOrbit,
+        RenderPlanet,
+        RenderStar,
+        RenderZone,
+    )
 
     forbidden = {
         "eccentricity",
@@ -150,8 +155,14 @@ def test_render_primitives_carry_no_scientific_fields():
         "provenance",
         "molecule",
         "detection_status",
+        # A zone is a band of geometry; what makes it a habitable zone stays
+        # in the science layer.
+        "luminosity",
+        "effective_temperature",
+        "inner_au",
+        "outer_au",
     }
-    for cls in (RenderStar, RenderPlanet, RenderOrbit):
+    for cls in (RenderStar, RenderPlanet, RenderOrbit, RenderZone):
         assert not (set(cls.__dataclass_fields__) & forbidden), cls.__name__
 
 

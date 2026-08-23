@@ -24,14 +24,16 @@ from ..coordinates.system_frame import SystemFrame
 from ..physics.orbital_elements import position_at_mean_anomaly
 from ..provenance import Status
 from .materials import material_for
-from .renderer import RenderOrbit, RenderPlanet, RenderStar, SceneDescription
+from .renderer import RenderOrbit, RenderPlanet, RenderStar, RenderZone, SceneDescription
 
 __all__ = [
     "build_system_scene",
     "build_frame_scene",
     "orbit_path",
+    "habitable_zone_overlay",
     "display_radius_au",
     "DisplayScale",
+    "HABITABLE_ZONE_DISCLAIMER",
 ]
 
 #: Bodies drawn to scale in an AU-wide view would be invisible, so radii are
@@ -159,6 +161,70 @@ def orbit_path(elements, samples: int = 512) -> np.ndarray | None:
 
     ecc_anomaly = np.linspace(0.0, 2.0 * np.pi, samples)
     return position_at_eccentric_anomaly(display, ecc_anomaly)
+
+
+#: Said in words wherever the zone is drawn. The Kopparapu bounds are a
+#: statement about stellar irradiation - where liquid water on an
+#: Earth-like planet with an Earth-like atmosphere would be
+#: thermodynamically possible - and nothing at all about whether a planet
+#: there is habitable, has water, or has an atmosphere.
+HABITABLE_ZONE_DISCLAIMER = (
+    "The habitable zone is a stellar-irradiation model, not a claim about "
+    "habitability: it says where an Earth-like atmosphere could support "
+    "liquid surface water, not that any planet drawn inside it does."
+)
+
+#: Fill and edge colours for the habitable-zone band. Purely display
+#: choices: neither value is read by anything that computes a boundary, and
+#: changing them cannot move the zone.
+HABITABLE_ZONE_FILL = (0.36, 0.78, 0.52, 0.13)
+HABITABLE_ZONE_EDGE = (0.45, 0.90, 0.62, 0.50)
+
+
+def habitable_zone_overlay(
+    zone, frame, *, samples: int = 240, identifier: str = "habitable-zone"
+) -> RenderZone | None:
+    """The habitable zone as a flat band, or None when there is none.
+
+    ``zone`` is the :class:`~astro_explorer.physics.stellar.HabitableZone`
+    the star record already computed - the same object the info panel
+    reports. Nothing here re-derives a boundary: the Kopparapu polynomial
+    lives in the physics layer and is evaluated once, upstream, so the
+    overlay and the panel cannot drift apart or disagree.
+
+    Returns None when either edge is unknown, which is what the physics
+    layer reports for a star with no luminosity, no effective temperature,
+    or a temperature outside the range the coefficients were fitted for. A
+    missing zone is drawn as nothing, never as a default ring.
+
+    The band is a flat annulus on the frame's reference plane. The zone is
+    really a spherical shell - it is a range of distances from the star, not
+    a region of one plane - so the annulus is a section through it, and the
+    caller says so in an annotation.
+    """
+    if zone is None or not zone.is_known:
+        return None
+
+    inner_au = zone.inner.value_in(u.au)
+    outer_au = zone.outer.value_in(u.au)
+    if inner_au is None or outer_au is None:
+        return None
+    if not (np.isfinite(inner_au) and np.isfinite(outer_au)):
+        return None
+    if inner_au <= 0.0 or outer_au <= inner_au:
+        return None
+
+    angle = np.linspace(0.0, 2.0 * np.pi, samples, endpoint=False)
+    unit = np.stack([np.cos(angle), np.sin(angle), np.zeros_like(angle)], axis=-1)
+
+    return RenderZone(
+        identifier=identifier,
+        inner_points_local=frame.place_planet(unit * inner_au).to_render(),
+        outer_points_local=frame.place_planet(unit * outer_au).to_render(),
+        color=HABITABLE_ZONE_FILL,
+        edge_color=HABITABLE_ZONE_EDGE,
+        label="habitable zone",
+    )
 
 
 def _orbit_is_assumed(elements) -> bool:
@@ -312,6 +378,7 @@ def build_frame_scene(
     mean_anomalies=None,
     draw_orbits: bool = True,
     orbit_samples: int = 720,
+    draw_habitable_zone: bool = True,
     exaggerate: bool = True,
 ) -> SceneDescription:
     """Build a scene entirely inside one :class:`SystemFrame`.
@@ -383,6 +450,28 @@ def build_frame_scene(
         default=None,
     )
     scene.annotations.append(scale.describe(largest))
+
+    # -- habitable zone --------------------------------------------------
+    if draw_habitable_zone:
+        zone = star.habitable_zone
+        overlay = habitable_zone_overlay(zone, frame)
+        if overlay is not None:
+            scene.zones.append(overlay)
+            scene.annotations.append(
+                "Habitable zone {0:.3g}-{1:.3g} AU ({2}), drawn as a section "
+                "through the shell on the reference plane. {3}".format(
+                    zone.inner.value_in(u.au),
+                    zone.outer.value_in(u.au),
+                    zone.model,
+                    HABITABLE_ZONE_DISCLAIMER,
+                )
+            )
+        else:
+            scene.annotations.append(
+                "No habitable zone drawn: {0} publishes no luminosity and "
+                "effective temperature the model accepts, so its boundaries "
+                "are unknown rather than defaulted.".format(star.name or "this star")
+            )
 
     # -- planets ---------------------------------------------------------
     for record in planets:

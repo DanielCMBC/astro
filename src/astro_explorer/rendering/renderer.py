@@ -24,6 +24,7 @@ __all__ = [
     "RenderStar",
     "RenderPlanet",
     "RenderOrbit",
+    "RenderZone",
     "SceneDescription",
     "ShaderLibrary",
     "SHADER_DIR",
@@ -40,6 +41,20 @@ def _as_float32_position(value) -> np.ndarray:
             "resolved or excluded before it reaches the renderer"
         )
     return position
+
+
+def _as_float32_ring(value, which: str) -> np.ndarray:
+    points = np.asarray(value, dtype=np.float32)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("{0} ring points must be an (N, 3) array".format(which))
+    if points.shape[0] < 3:
+        raise ValueError("{0} ring needs at least 3 points to bound a region".format(which))
+    if not np.all(np.isfinite(points)):
+        raise ValueError(
+            "zone rings must be finite; an unknown boundary must be excluded "
+            "before it reaches the renderer"
+        )
+    return np.ascontiguousarray(points)
 
 
 @dataclass(frozen=True)
@@ -105,6 +120,46 @@ class RenderOrbit:
         return int(self.points_local.shape[0])
 
 
+@dataclass(frozen=True)
+class RenderZone:
+    """A flat annular region, ready to draw.
+
+    Used for the habitable-zone overlay. Both rings arrive already sampled
+    in the active frame's display units, so the renderer draws a band
+    between two closed loops and is told nothing about what the band means:
+    no radii in AU, no luminosity, no temperature, no model name, no
+    provenance. Whether the region exists at all was decided upstream.
+
+    The two rings must have the same vertex count, because the band is
+    built by pairing them index for index.
+    """
+
+    identifier: str
+    inner_points_local: np.ndarray  # (N, 3) float32
+    outer_points_local: np.ndarray  # (N, 3) float32
+    #: Fill colour. Alpha is a display choice and never a scientific one.
+    color: tuple[float, float, float, float] = (0.36, 0.78, 0.52, 0.13)
+    #: Edge colour for the two boundary loops.
+    edge_color: tuple[float, float, float, float] = (0.45, 0.9, 0.62, 0.5)
+    label: str = ""
+
+    def __post_init__(self) -> None:
+        inner = _as_float32_ring(self.inner_points_local, "inner")
+        outer = _as_float32_ring(self.outer_points_local, "outer")
+        if inner.shape[0] != outer.shape[0]:
+            raise ValueError(
+                "a zone's two rings must have the same vertex count; got "
+                "{0} inner and {1} outer".format(inner.shape[0], outer.shape[0])
+            )
+        object.__setattr__(self, "inner_points_local", inner)
+        object.__setattr__(self, "outer_points_local", outer)
+
+    @property
+    def vertex_count(self) -> int:
+        """Vertices per ring, not the total."""
+        return int(self.inner_points_local.shape[0])
+
+
 @dataclass
 class SceneDescription:
     """Everything one frame needs, in display units of the active frame."""
@@ -112,13 +167,15 @@ class SceneDescription:
     stars: list[RenderStar] = field(default_factory=list)
     planets: list[RenderPlanet] = field(default_factory=list)
     orbits: list[RenderOrbit] = field(default_factory=list)
+    #: Scientific regions drawn as flat bands, e.g. the habitable zone.
+    zones: list[RenderZone] = field(default_factory=list)
     #: Name of the active frame's unit, for the on-screen scale bar.
     unit_label: str = "AU"
     #: Free-text notes the UI overlays, e.g. which values were assumed.
     annotations: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not (self.stars or self.planets or self.orbits)
+        return not (self.stars or self.planets or self.orbits or self.zones)
 
     def bounding_radius(self) -> float:
         """Largest distance from the origin, for framing the camera."""
@@ -127,6 +184,9 @@ class SceneDescription:
         for orbit in self.orbits:
             if orbit.vertex_count:
                 points.append(orbit.points_local[np.argmax(np.linalg.norm(orbit.points_local, axis=1))])
+        for zone in self.zones:
+            ring = zone.outer_points_local
+            points.append(ring[np.argmax(np.linalg.norm(ring, axis=1))])
         if not points:
             return 1.0
         return float(max(np.linalg.norm(np.asarray(p, dtype=np.float64)) for p in points)) or 1.0
@@ -263,6 +323,7 @@ PROGRAMS = {
     "gas_giant": ("planet.vert", "gas_giant.frag"),
     "atmosphere": ("planet_atmosphere.vert", "atmosphere.frag"),
     "orbit": ("orbit.vert", "orbit.frag"),
+    "zone": ("zone.vert", "zone.frag"),
 }
 
 

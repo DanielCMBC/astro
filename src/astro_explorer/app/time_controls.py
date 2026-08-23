@@ -97,7 +97,10 @@ class TimeControls:
     scale_uncertainty_days:
         How far the canonical date could still be from true ``BJD_TDB``,
         after the mission offset has been applied. Zero when the scale is
-        stated; about 550 s when the archive did not say.
+        stated barycentric; about 568 s when the archive did not say, and
+        about 77 s for an ``HJD_UTC`` epoch, which has already had the
+        Earth's orbital light time removed. Evaluated at the epoch's own
+        date, so the leap-second term is the one that applied then.
     source_kind:
         Which orbital event the starting epoch marks, so a panel can say
         "started at a published periastron" rather than only quote a number.

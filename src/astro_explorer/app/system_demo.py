@@ -105,7 +105,7 @@ def render_system(
 
             if labels:
                 header = [
-                    "{0}  -  BJD {1:.3f}".format(system_slice.frame.host_name, epoch),
+                    "{0}  -  JD {1:.3f}".format(system_slice.frame.host_name, epoch),
                     scene.annotations[0] if scene.annotations else "",
                 ]
                 image = draw_labels(
@@ -133,7 +133,7 @@ def render_system(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="Kepler-11")
-    parser.add_argument("--time", type=float, default=None, help="epoch as a BJD")
+    parser.add_argument("--time", type=float, default=None, help="epoch as a full JD")
     parser.add_argument("--frames", type=int, default=1, help="physical-time sequence length")
     parser.add_argument("--periods", type=float, default=1.0, help="outer periods to span")
     parser.add_argument("--out", default="renders")

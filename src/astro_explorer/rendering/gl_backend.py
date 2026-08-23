@@ -98,6 +98,8 @@ class RenderSettings:
     #: Screen-space dash period for an orbit drawn from assumed elements.
     dash_period: float = 0.035
     draw_orbits: bool = True
+    #: Scientific region overlays (the habitable zone).
+    draw_zones: bool = True
 
 
 class GLRenderer:
@@ -133,6 +135,7 @@ class GLRenderer:
         #: Draw calls issued by the last frame, for the batching tests.
         self.last_planet_draw_calls = 0
         self.last_orbit_draw_calls = 0
+        self.last_zone_draw_calls = 0
 
     # -- setup -----------------------------------------------------------
     def _program(self, name: str):
@@ -279,8 +282,13 @@ class GLRenderer:
 
         self.last_planet_draw_calls = 0
         self.last_orbit_draw_calls = 0
+        self.last_zone_draw_calls = 0
         self._draw_stars(scene, view_projection, camera_position, time)
         self._draw_planets(scene, view_projection, camera_position, star_position)
+        # Zones first: they are translucent ground the orbits and bodies
+        # are read against, so they must never paint over an orbit line.
+        if self.settings.draw_zones:
+            self._draw_zones(scene, view_projection)
         if self.settings.draw_orbits:
             self._draw_orbits(scene, view_projection)
 
@@ -413,6 +421,94 @@ class GLRenderer:
 
         self.ctx.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
+
+    def _draw_zones(self, scene, view_projection) -> None:
+        """Every zone in one triangle draw call.
+
+        The band between a zone's two rings is triangulated here rather than
+        in a geometry stage, so the GPU is handed finished vertices and has
+        no say in where a boundary sits. Depth writes stay off: a zone is an
+        overlay lying in the reference plane, and orbits that pass through
+        it must remain visible on both sides.
+        """
+        import moderngl
+
+        if not scene.zones:
+            return
+
+        vertices, indices = self._batch_zones(scene)
+        if indices.size == 0:
+            return
+
+        program = self._program("zone")
+        program["u_view_projection"].write(view_projection)
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.ctx.depth_mask = False
+
+        buffer = self.ctx.buffer(vertices.tobytes())
+        index_buffer = self.ctx.buffer(indices.tobytes())
+        layout, names = self._binding(program, self._ZONE_FIELDS)
+        vao = self.ctx.vertex_array(program, [(buffer, layout, *names)], index_buffer)
+        vao.render(moderngl.TRIANGLES)
+        self.last_zone_draw_calls = 1
+
+        vao.release()
+        buffer.release()
+        index_buffer.release()
+
+        self.ctx.depth_mask = True
+        self.ctx.disable(moderngl.BLEND)
+
+    #: Interleaved layout of the batched zone buffer.
+    _ZONE_FIELDS = [
+        ("in_position", "3f", 12),
+        ("in_color", "4f", 16),
+    ]
+
+    def _batch_zones(self, scene):
+        """Pack every zone into one vertex array and one index array.
+
+        Each ring pair becomes a closed quad strip: inner[i], outer[i],
+        inner[i+1], outer[i+1], wrapping at the end so the band has no seam.
+        Written out as explicit triangles because GL 3.3 has no portable
+        primitive restart in ModernGL, exactly as for orbits.
+        """
+        vertex_blocks = []
+        index_blocks = []
+        offset = 0
+
+        for zone in scene.zones:
+            count = zone.vertex_count
+            if count < 3:
+                continue
+
+            block = np.empty((2 * count, 7), dtype=np.float32)
+            block[0::2, 0:3] = zone.inner_points_local
+            block[1::2, 0:3] = zone.outer_points_local
+            block[:, 3:7] = zone.color
+            vertex_blocks.append(block)
+
+            # Pair index i with i+1 modulo count, so the last quad closes
+            # the loop back onto the first vertex pair.
+            i = np.arange(count, dtype=np.uint32)
+            j = (i + 1) % count
+            inner_i, outer_i = 2 * i + offset, 2 * i + 1 + offset
+            inner_j, outer_j = 2 * j + offset, 2 * j + 1 + offset
+            index_blocks.append(
+                np.stack(
+                    [inner_i, outer_i, outer_j, inner_i, outer_j, inner_j], axis=-1
+                ).ravel()
+            )
+            offset += 2 * count
+
+        if not vertex_blocks:
+            return np.zeros((0, 7), dtype=np.float32), np.zeros(0, dtype=np.uint32)
+
+        return (
+            np.ascontiguousarray(np.vstack(vertex_blocks), dtype=np.float32),
+            np.ascontiguousarray(np.concatenate(index_blocks), dtype=np.uint32),
+        )
 
     #: Interleaved layout of the batched orbit buffer.
     _ORBIT_FIELDS = [

@@ -128,7 +128,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="HD 80606", help="host star in the snapshot")
     parser.add_argument("--planet", default=None, help="planet name (default: the innermost)")
-    parser.add_argument("--time", type=float, default=None, help="epoch as a BJD")
+    parser.add_argument("--time", type=float, default=None, help="epoch as a full JD")
     parser.add_argument("--out", default=None, help="directory for rendered PNGs")
     parser.add_argument("--no-render", action="store_true", help="text only")
     args = parser.parse_args(argv)

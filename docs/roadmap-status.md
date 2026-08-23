@@ -197,6 +197,15 @@ A final time-layer review accepted the split and raised two more:
 | P2 forbid new production callsites of `as_bjd()` | done - `test_no_new_production_callsite_uses_as_bjd` scans `src/` and allows only the definition |
 | P2 keep the HJD bound at 8 s | kept - Eastman/Siverd/Gaudi quote errors as large as ~8 s, so the conservative bound stands rather than a 5.3 s displacement estimate |
 
+### Explorer C
+
+| Item | Status |
+|---|---|
+| C1 habitable-zone overlay | done - `RenderZone` + the `zone` shader program; the band is the physics layer's own boundaries, drawn as a section through the shell |
+| C2 orbital orientation overlay | not started |
+| C3 distance and coordinate inspector | not started |
+| C4 scientific plot integration (HR diagram, blackbody, spectra) | not started |
+
 Deferred by review section 6: separating `active_coordinate_frame` from a
 `presentation_state`, which is wanted before the final timed free-flight
 camera and explicitly does not block Explorer B. A persistent internal

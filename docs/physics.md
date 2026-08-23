@@ -111,6 +111,20 @@ than a guessed one.
 
 Two conservation tests do the work a shape test cannot:
 
+**The habitable zone is evaluated once.** `habitable_zone_au` lives in
+`physics/stellar.py` and is reached only through `StarRecord.habitable_zone`.
+Both consumers - the info panel and the 3D overlay - read that one object,
+so there is no second implementation of the Kopparapu polynomial to drift
+out of step, and `tests/regression/test_explorer_c.py` asserts the two
+agree. The renderer receives two rings of finished geometry and is told
+nothing it could recompute a boundary from.
+
+Outside 2600 K <= Teff <= 7200 K the model returns UNKNOWN bounds rather
+than extrapolating the fit, and an unknown zone is drawn as nothing. That
+is not a rare edge case: TRAPPIST-1, whose planets are routinely described
+as being in the habitable zone, is cooler than the fitted floor, so this
+project draws no zone for it and says why.
+
 **Kepler's second law.** 100 equal time steps around the orbit must sweep
 equal areas. Equal steps in mean anomaly *are* equal steps in time, so this
 tests the propagator the animation actually uses. Areas are computed from
