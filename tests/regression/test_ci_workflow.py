@@ -326,3 +326,19 @@ def test_the_test_job_names_the_coordinate_inspector_step(workflow):
     # And it runs before the full suite, so the specific signal arrives first.
     names = [s.get("name", "") for s in steps]
     assert names.index(named[0]["name"]) < names.index("Full test suite")
+
+
+def test_the_test_job_names_the_tangent_basis_step(workflow):
+    """C3.5's convention checks get their own CI line.
+
+    A reflected basis or a flipped line-of-sight sign still passes every
+    round-trip test and still renders plausibly. The tests that catch it are
+    worth surfacing by name rather than inside a full-suite total.
+    """
+    steps = _steps(workflow, "tests")
+    named = [s for s in steps if "Explorer C3.5" in s.get("name", "")]
+    assert named, [s.get("name") for s in steps]
+    assert "test_explorer_c35.py" in named[0]["run"]
+
+    names = [s.get("name", "") for s in steps]
+    assert names.index(named[0]["name"]) < names.index("Full test suite")

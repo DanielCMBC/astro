@@ -53,6 +53,13 @@ jobs:
       - name: Coordinate and distance inspector tests (Explorer C3)
         run: pytest tests/regression/test_explorer_c3.py -q
 
+      # C3.5 is a module about conventions: a wrong line-of-sight sign or a
+      # reflected basis produces orbits that look entirely plausible. The
+      # checks against Astropy and the explicit sign test are worth their
+      # own line on the CI page.
+      - name: SystemFrame to ICRS basis tests (Explorer C3.5)
+        run: pytest tests/regression/test_explorer_c35.py -q
+
       - name: Full test suite
         run: pytest -q
 

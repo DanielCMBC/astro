@@ -49,6 +49,7 @@ import numpy as np
 
 from ..provenance import Parameter, Status, derived, unknown
 from .frames import Frame, SkyPosition
+from .tangent import absolute_position_blockers, system_offset_to_icrs_pc
 
 __all__ = [
     "InspectorFrame",
@@ -61,10 +62,11 @@ __all__ = [
     "periapsis_distance",
     "apoapsis_distance",
     "system_frame_position",
-    "ABSOLUTE_POSITION_UNRESOLVED",
     "ABSOLUTE_POSITION_NO_HOST",
+    "ABSOLUTE_POSITION_NO_ORBIT",
     "absolute_planet_position",
     "planet_distance_rows",
+    "planet_to_star_distance",
 ]
 
 
@@ -424,67 +426,95 @@ def system_frame_position(position_au, *, label: str = "System-frame position") 
     )
 
 
-#: Why C3 publishes no absolute planet position at all.
-#:
-#: The host's Cartesian position lives in the ICRS basis. The planet's local
-#: vector lives in the system frame, whose axes are set by the orbital
-#: transform: the reference plane is the plane of the sky, and ``+x`` within
-#: it is the direction the longitude of the ascending node is measured from.
-#:
-#: There is no defined rotation between those two bases in this codebase, so
-#: adding the two vectors is not a valid vector addition - it adds components
-#: expressed in different axes. That is a *basis* error, not an uncertainty,
-#: and it does not become correct when the node happens to be measured: the
-#: mapping from the system frame to a local tangent triad at the host
-#: (radial, east, north) still has to be defined and tested before any such
-#: sum means anything.
-#:
-#: At 66 pc an AU-scale offset is numerically tiny, which is exactly the trap.
-#: A small error is not a correct coordinate, and scale must not be allowed to
-#: hide a basis mistake. So the row is reported as unresolved and carries the
-#: reason, rather than publishing a number that would read as an ICRS
-#: position. Building the real transform is its own milestone.
-ABSOLUTE_POSITION_UNRESOLVED = (
-    "not resolved - the SystemFrame -> ICRS basis rotation is not defined, "
-    "so the host's ICRS vector and the planet's local vector cannot be added"
-)
-
-#: The additional reason that applies when the host has no address either.
+#: The reason that applies when the host itself has no address.
 ABSOLUTE_POSITION_NO_HOST = "the host has no usable absolute position"
+
+#: The reason that applies when the orbit could not be propagated.
+ABSOLUTE_POSITION_NO_ORBIT = "the orbit could not be propagated"
 
 
 def absolute_planet_position(
     host: SkyPosition | None,
     position_au,
+    *,
+    node: Parameter | None = None,
+    epoch_resolved: bool = False,
+    normalised: bool = False,
 ) -> CoordinateRow:
-    """The planet's absolute position - deliberately unresolved in C3.
+    r"""The planet's absolute ICRS position - still withheld, now precisely.
 
-    Always returns an UNKNOWN row. See :data:`ABSOLUTE_POSITION_UNRESOLVED`:
-    the host term and the local term are expressed in different bases, and
-    C3 has no rotation between them. Returning the sum anyway would publish
-    a triplet labelled ICRS that is not an ICRS position.
+    .. math::
+        \mathbf r_{planet} = \mathbf r_{host} + R_{sky
+ightarrow ICRS}\,\mathbf r_{local}
 
-    A row is still returned rather than nothing, because "we cannot resolve
-    this and here is why" is information the panel should show. What is
-    withheld is the number, not the explanation.
+    C3.5 supplies :math:`R`, which C3 lacked. That removes the *basis* error
+    but not the remaining scientific gates, and every one of them is checked
+    here through :func:`absolute_position_blockers`:
 
-    Everything that *is* well defined remains available:
-    :func:`system_frame_position` for the local coordinates and
-    :func:`host_planet_distance` for the separation. Neither needs a basis
-    rotation - a distance is invariant under one, and the local triplet is
-    reported in the frame it is actually expressed in.
+    * the host must have a usable distance - otherwise there is no origin;
+    * the orbit must propagate - otherwise there is no offset;
+    * the node's **convention** must be recorded, its **sense** resolved
+      (a measured number is only known modulo 180 degrees unless
+      line-of-sight information broke the tie), and the host must not sit at
+      a pole where sky-plane azimuth is gauge-dependent;
+    * the **coordinate epoch** must be handled. ``SkyPosition`` carries no
+      obstime, proper motion or radial velocity, so ``epoch_resolved``
+      defaults to False and this gate currently blocks everything. For a
+      nearby high-proper-motion star, mixing a catalogue-epoch host position
+      with a planet offset at the requested time is a larger error than the
+      offset itself.
+
+    Every failing gate is reported, not just the first: a row blocked for
+    three reasons should say three.
+
+    ``normalised=True`` returns the display realisation anyway, stamped
+    ASSUMED_FOR_VISUALIZATION and carrying every unresolved reason. It
+    exists so a scene can be drawn. It is never a catalogue coordinate.
     """
-    note = ABSOLUTE_POSITION_UNRESOLVED
+    local = system_frame_position(position_au)
+    label = "Absolute position"
+    frame = InspectorFrame.ICRS
+    provenance = "r_host + R_sky->icrs * r_planet/local"
+
+    reasons: list[str] = []
     if host is None or not host.has_distance:
-        note = "{0}; also, {1}".format(note, ABSOLUTE_POSITION_NO_HOST)
+        reasons.append(ABSOLUTE_POSITION_NO_HOST)
+    if not local.is_known:
+        reasons.append(ABSOLUTE_POSITION_NO_ORBIT)
+    reasons.extend(
+        absolute_position_blockers(host, node, epoch_resolved=epoch_resolved)
+    )
+
+    # Nothing can be computed at all without an origin and an offset.
+    unbuildable = (
+        ABSOLUTE_POSITION_NO_HOST in reasons or ABSOLUTE_POSITION_NO_ORBIT in reasons
+    )
+    if reasons and (unbuildable or not normalised):
+        return CoordinateRow(
+            label, None, u.pc, frame,
+            status=Status.UNKNOWN,
+            provenance=provenance,
+            note="; also, ".join(reasons),
+        )
+
+    host_pc = host.cartesian_pc(Frame.ICRS)
+    offset_pc = system_offset_to_icrs_pc(host, local.values)
+    if host_pc is None or offset_pc is None:  # pragma: no cover - guarded above
+        return CoordinateRow(
+            label, None, u.pc, frame, status=Status.UNKNOWN,
+            provenance=provenance, note=ABSOLUTE_POSITION_NO_HOST,
+        )
+
     return CoordinateRow(
-        "Absolute position",
-        None,
+        label,
+        np.asarray(host_pc, dtype=np.float64) + offset_pc,
         u.pc,
-        InspectorFrame.ICRS,
-        status=Status.UNKNOWN,
-        provenance="unresolved(r_host + R * r_planet/local)",
-        note=note,
+        frame,
+        status=Status.ASSUMED_FOR_VISUALIZATION
+        if reasons
+        else _combined_status(host.ra, host.dec, host.distance),
+        provenance=provenance,
+        note="; also, ".join(reasons),
     )
 
 
@@ -497,5 +527,59 @@ def planet_distance_rows(elements, position_au, *, host: SkyPosition | None = No
         system_frame_position(position_au),
     ]
     if host is not None:
-        rows.append(absolute_planet_position(host, position_au))
+        rows.append(
+            absolute_planet_position(
+                host, position_au, node=elements.longitude_of_ascending_node
+            )
+        )
     return rows
+
+
+def planet_to_star_distance(
+    host: SkyPosition | None,
+    position_au,
+    other: SkyPosition | None,
+    *,
+    node: Parameter | None = None,
+    epoch_resolved: bool = False,
+) -> Parameter:
+    r"""Distance from a planet to another star, in a common float64 frame.
+
+    .. math::
+        D = \left|\mathbf r_{other} - \mathbf r_{planet}ight|
+
+    Needs a real absolute planet vector, so every gate that blocks
+    :func:`absolute_planet_position` blocks this too, and the reasons are
+    passed through rather than replaced. It additionally requires the other
+    star to be located, and both objects to be at a common coordinate epoch
+    - which is the same gate, since neither carries one.
+
+    It deliberately does **not** fall back to the host-to-star separation.
+    That fallback would be plausible - the two differ by an AU at parsec
+    range - and it would answer a question nobody asked, with nothing on the
+    number saying it was about the star instead of the planet.
+    """
+    provenance = "|r_other - r_planet| (ICRS, float64)"
+    if other is None or not other.has_distance:
+        return unknown(
+            u.pc, provenance=provenance, note="the other star has no usable distance"
+        )
+
+    planet = absolute_planet_position(
+        host, position_au, node=node, epoch_resolved=epoch_resolved
+    )
+    if not planet.is_known or planet.status is Status.ASSUMED_FOR_VISUALIZATION:
+        # No fallback: the reason travels instead of a substitute number.
+        return unknown(u.pc, provenance=provenance, note=planet.note)
+
+    other_pc = other.cartesian_pc(Frame.ICRS)
+    if other_pc is None:  # pragma: no cover - guarded by has_distance
+        return unknown(u.pc, provenance=provenance)
+
+    separation = float(
+        np.linalg.norm(np.asarray(other_pc, dtype=np.float64) - planet.values)
+    )
+    status = _combined_status(other.ra, other.dec, other.distance)
+    if Status.ASSUMED_FOR_VISUALIZATION in (status, planet.status):
+        status = Status.ASSUMED_FOR_VISUALIZATION
+    return _with_status(separation, u.pc, status, provenance)

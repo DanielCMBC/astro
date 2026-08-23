@@ -40,7 +40,6 @@ from astro_explorer.coordinates.inspector import (
     InspectorRow,
     NoteRow,
     ABSOLUTE_POSITION_NO_HOST,
-    ABSOLUTE_POSITION_UNRESOLVED,
     absolute_planet_position,
     apoapsis_distance,
     galactic_coordinates,
@@ -49,6 +48,10 @@ from astro_explorer.coordinates.inspector import (
     planet_distance_rows,
     star_coordinate_rows,
     system_frame_position,
+)
+from astro_explorer.coordinates.tangent import (
+    EPOCH_NOT_MODELLED,
+    NODE_SENSE_UNRESOLVED,
 )
 from astro_explorer.provenance import Status, assumed, measured, unknown
 
@@ -340,18 +343,18 @@ def test_a_detached_system_still_reports_local_coordinates(trappist1):
 
 
 def test_the_absolute_planet_position_is_not_published(hd80606):
-    """C3 refuses to publish a coordinate it cannot express in one basis.
+    """No real planet in the snapshot gets an absolute position.
 
-    The host's vector is ICRS. The planet's is in the system frame, whose
-    axes come from the orbital transform - the sky plane, with ``+x`` the
-    direction the ascending node is measured from. No rotation between those
-    two bases exists in this codebase, so their sum would add components
-    measured along different axes.
+    C3 withheld this because no SystemFrame -> ICRS rotation existed at all.
+    C3.5 supplied that rotation, and the row stays withheld anyway - for a
+    different and now sharper reason: HD 80606 b has no measured ascending
+    node, so the display normalises it to zero and the orbit's azimuth about
+    the line of sight is a convention. The transform is exact; its input is
+    not an observation.
 
-    That is a basis error, not an uncertainty. Marking the row assumed would
-    have been the wrong repair: it would still have labelled the triplet
-    ICRS. At 66 pc the offset is numerically tiny, which is exactly the trap
-    - a small error is not a correct coordinate.
+    Marking the row assumed would still be the wrong repair. It would put a
+    triplet labelled ICRS in front of a reader as though someone had
+    measured it.
     """
     record = hd80606.planet("HD 80606 b")
     row = _row(hd80606.inspect_planet(record, EPOCH_JD), "Absolute position")
@@ -359,28 +362,34 @@ def test_the_absolute_planet_position_is_not_published(hd80606):
     assert not row.is_known
     assert row.values is None
     assert row.status is Status.UNKNOWN
-    assert ABSOLUTE_POSITION_UNRESOLVED in row.note
-    # The reason travels with the row, so a panel can say why.
-    assert "basis rotation is not defined" in row.format()
+    assert NODE_SENSE_UNRESOLVED in row.note
+    assert EPOCH_NOT_MODELLED in row.note
+    # The reasons travel with the row, so a panel can say why.
+    assert "modulo 180 degrees" in row.format()
 
 
 def test_a_located_host_does_not_make_the_absolute_position_available(hd80606):
     """A known host address is not the missing piece.
 
-    HD 80606 has a usable parallax distance, so every ingredient except the
-    rotation is present. If having a located host were enough to publish the
-    sum, this is where that would show up.
+    HD 80606 has a usable parallax distance and, since C3.5, a valid tangent
+    basis. The only thing missing is the node. If either of the other two
+    were enough on its own, this is where that would show up.
     """
     assert hd80606.frame.located
     assert hd80606.star.position.has_distance
 
     record = hd80606.planet("HD 80606 b")
     state = hd80606.state(record, EPOCH_JD)
-    row = absolute_planet_position(hd80606.star.position, state.position)
+    row = absolute_planet_position(
+        hd80606.star.position,
+        state.position,
+        node=record.elements.longitude_of_ascending_node,
+    )
 
     assert not row.is_known
-    # The note names the rotation, not the host, as the blocker.
-    assert ABSOLUTE_POSITION_UNRESOLVED in row.note
+    # The note names the node and the epoch, not the host, as the blockers.
+    assert NODE_SENSE_UNRESOLVED in row.note
+    assert EPOCH_NOT_MODELLED in row.note
     assert ABSOLUTE_POSITION_NO_HOST not in row.note
 
 
@@ -388,25 +397,32 @@ def test_an_unlocated_host_reports_both_reasons(trappist1):
     """Two independent obstacles, both named."""
     record = trappist1.planets[0]
     state = trappist1.state(record, EPOCH_JD)
-    row = absolute_planet_position(trappist1.star.position, state.position)
+    row = absolute_planet_position(
+        trappist1.star.position,
+        state.position,
+        node=record.elements.longitude_of_ascending_node,
+    )
 
     assert not row.is_known
-    assert ABSOLUTE_POSITION_UNRESOLVED in row.note
     assert ABSOLUTE_POSITION_NO_HOST in row.note
+    assert EPOCH_NOT_MODELLED in row.note
 
 
-def test_the_absolute_position_takes_no_frame_or_node_argument():
-    """There is no configuration that would make the sum valid.
+def test_the_absolute_position_takes_no_frame_argument():
+    """Still no frame argument, even now that the rotation exists.
 
-    A ``frame`` argument would suggest the answer merely differs by frame; a
-    ``node`` argument would suggest a measured node unlocks it. Neither is
-    true while the rotation is undefined, so neither parameter exists.
+    A ``frame`` parameter would suggest the answer merely differs by frame.
+    It does not: the sum is formed in ICRS, and any other frame is a
+    downstream rotation of the finished vector, not a different computation.
+
+    ``node`` *is* a parameter, and required, because whether the node was
+    observed is exactly what decides if the result may be published at all.
     """
     import inspect
 
     parameters = inspect.signature(absolute_planet_position).parameters
     assert "frame" not in parameters
-    assert "node" not in parameters
+    assert "node" in parameters
 
 
 def test_what_is_well_defined_is_still_published(hd80606):
