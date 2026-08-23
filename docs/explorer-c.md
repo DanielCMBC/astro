@@ -252,3 +252,206 @@ frame: no exoplanet in the snapshot has a measured longitude of the
 ascending node, so there is no real system that can demonstrate what a fully
 determined orientation looks like. The third is HD 80606 b, and it is what
 almost every planet in the archive looks like.
+
+---
+
+# C3 — the coordinate and distance inspector
+
+C1 and C2 asked whether the scene could *draw* derived science honestly. C3
+asks whether the explorer can put a **number** next to it.
+
+That is the easier thing to get quietly wrong. A drawn overlay is obviously
+a picture. A figure reading `0.2057 AU` is read as a measurement, and
+nothing about its appearance says whether it came from the float64
+propagator or from a float32 vertex that had already been scaled so the
+planet would be visible beside its star.
+
+So C3 has exactly one rule:
+
+> **Every scientific distance and coordinate comes from float64 scientific
+> state, and never from display geometry.**
+
+## What the renderer does to a number
+
+Each of these is correct for drawing and fatal for measuring:
+
+| the renderer | what it does to a position |
+|---|---|
+| float32 vertices | loses an AU-sized offset at parsec scale |
+| radius exaggeration | changes apparent size by large factors |
+| level of detail | swaps the mesh under the body |
+| camera transforms | moves everything, every frame |
+
+A distance read back out of the scene would therefore change when the viewer
+zoomed — which is precisely the sort of quantity that looks authoritative
+and is not.
+
+`coordinates/inspector.py` imports no rendering module, and
+`test_explorer_c3.py` builds the scene both ways and asserts the inspector
+did not move:
+
+```
+exaggerate=False / exaggerate=True   -> identical inspector values
+LOD 0 .. 5                            -> identical inspector values
+camera anywhere                       -> identical separations
+```
+
+The scene really does differ in each case — the tests assert that too, so
+an invariance check cannot pass by comparing two identical scenes.
+
+## Three row types, and why the second one is strict
+
+```python
+InspectorRow("Distance from Sun", parameter)          # a scalar
+CoordinateRow("Cartesian position", xyz, u.pc, ICRS)  # a triplet
+NoteRow("Phase provenance", "constrained by ...")     # a qualifier
+```
+
+`CoordinateRow` **cannot be constructed without naming its frame**. A bare
+`x/y/z` is meaningless: the same planet is at three entirely different
+coordinates in ICRS, in Galactic and in its own system frame. Omitting the
+frame is a `ValueError`, not a display quirk noticed later.
+
+Non-finite components are rejected for the same reason. An unknown position
+is `None` and reads as UNKNOWN; it is never NaN dressed as a number.
+
+`NoteRow` carries the **phase provenance**, and it sits in the row list
+rather than in prose on purpose. `Distance from host: 0.2057 AU` means
+something quite different depending on whether the planet's position at this
+instant is fixed by a published epoch or is being advanced from an arbitrary
+zero — in the second case the number describes the motion, not tonight. A
+panel that rendered the distances must not be able to drop the sentence that
+says how to read them.
+
+## The frame layer is Astropy's
+
+There is no second hand-written RA/Dec engine. `SkyCoord` does the ICRS ↔
+Galactic work, and the round trip is asserted to machine precision.
+
+Galactic `l` and `b` are available even when the parallax is unusable: a
+direction needs no distance. It is the *radial* coordinate that is missing,
+not the pointing.
+
+## Distances come from the propagated state
+
+```python
+r = np.linalg.norm(planet_position_au)   # the float64 physics vector
+```
+
+The identity `r = a(1 - e cos E)` holds, and the tests check that it holds —
+but the inspector does not use it. Recomputing would create a second opinion
+about the orbit, free to drift from the one actually drawn. **One
+propagation, one answer.**
+
+HD 80606 b is the reason this matters: at `e = 0.93` the instantaneous
+distance sweeps a factor of ~28 across one period, so a UI that showed the
+semimajor axis as "the distance" would be wrong by that factor for most of
+the orbit.
+
+## An assumption does not become a measurement
+
+`a(1-e)` is exact — which is the trap. The arithmetic being sound says
+nothing about whether `a` was measured:
+
+| inputs | periapsis status |
+|---|---|
+| `a`, `e` measured | `DERIVED` |
+| either assumed for visualisation | `ASSUMED_FOR_VISUALIZATION` |
+| either unknown | `UNKNOWN` |
+
+A value invented so a picture could be drawn must not emerge as a quotable
+orbital distance.
+
+## A detached system keeps its orbit and claims no address
+
+TRAPPIST-1 has no usable distance in the committed snapshot. It therefore
+reports:
+
+```
+Distance from Sun     UNKNOWN     (never 0 pc — 0 pc is the Sun)
+Cartesian position    UNKNOWN
+System-frame position known
+Distance from host    known
+Absolute position     UNKNOWN
+```
+
+The orbit is fine. It is the *address* that is missing. This is the
+detached-frame rule from Explorer B, applied to the sky.
+
+## The coordinate C3 refuses to publish
+
+The obvious next row would be the planet's absolute position:
+
+```
+r_planet = r_host + r_planet/local
+```
+
+C3 does **not** publish it, and the reason is worth being precise about.
+
+The host's Cartesian position is in the **ICRS** basis. The planet's local
+vector is in the **system frame**, whose axes come from the orbital
+transform: the reference plane is the plane of the sky, and `+x` within it
+is the direction the longitude of the ascending node is measured from. No
+rotation between those two bases exists in this codebase.
+
+So that sum is not a valid vector addition — it adds components measured
+along different axes. That is a **basis error, not an uncertainty**, and it
+does not become correct when Ω happens to be measured: the mapping from the
+system frame to a local tangent triad at the host still has to be defined
+and tested first.
+
+At 66 pc an AU-scale offset is numerically tiny, which is exactly the trap:
+
+> A small error is not a correct coordinate. Scale must not be allowed to
+> hide a basis mistake.
+
+The row is therefore reported as unresolved and carries the reason, so the
+panel can say *why* rather than showing a bare "unknown":
+
+```
+Absolute position: unknown [ICRS] - not resolved - the SystemFrame -> ICRS
+basis rotation is not defined, so the host's ICRS vector and the planet's
+local vector cannot be added
+```
+
+Everything that *is* well defined stays available. A separation is invariant
+under any rotation, and the local triplet is reported in the frame it is
+actually expressed in — so `Distance from host` and `System-frame position`
+need no transform and are published normally.
+
+`test_no_published_planet_triplet_claims_a_celestial_frame` sweeps every
+planet of every located system and asserts that the only planet triplet
+carrying values is tagged `SystemFrame`.
+
+## What a real absolute position would need
+
+A future milestone, not a C3 detail. It needs an explicit local triad at the
+host built from its ICRS coordinates (α, δ):
+
+```
+e_r      radial, along the line of sight
+e_east   increasing RA
+e_north  increasing Dec
+```
+
+then a definition of exactly what the orbital `+x` axis means relative to
+that triad. Only then:
+
+```
+r_planet,ICRS = r_host,ICRS + R_local->ICRS · r_local
+```
+
+And even then, if Ω is unknown the host–planet *distance* remains physical
+while the absolute sky-plane *direction* stays unconstrained. Planet-to-
+other-star distance is blocked on the same transform and is likewise not
+offered; star-to-star separation, which needs no local vector, already
+exists as `separation_pc`.
+
+## Worked systems
+
+| system | what it exercises |
+|---|---|
+| HD 80606 b | `e = 0.93`; instantaneous distance against peri/apo |
+| Kepler-11 | six planets sharing one host origin |
+| TRAPPIST-1 | detached: local coordinates, no absolute distance |
+| HD 219134 | mixed data, and a quoted distance uncertainty |

@@ -46,6 +46,13 @@ jobs:
       - name: Architecture / golden-rule tests
         run: pytest tests/regression/test_architecture.py -v
 
+      # C3's claim is that every coordinate and distance is invariant under
+      # exaggeration, level of detail and camera placement. That is worth
+      # reading off a CI page as its own line rather than as part of a
+      # thousand-test total, so it runs named and first.
+      - name: Coordinate and distance inspector tests (Explorer C3)
+        run: pytest tests/regression/test_explorer_c3.py -q
+
       - name: Full test suite
         run: pytest -q
 

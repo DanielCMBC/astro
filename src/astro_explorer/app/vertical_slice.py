@@ -32,6 +32,11 @@ import astropy.units as u
 import numpy as np
 import pandas as pd
 
+from ..coordinates.inspector import (
+    NoteRow,
+    planet_distance_rows,
+    star_coordinate_rows,
+)
 from ..coordinates.system_frame import SystemFrame
 from ..data.nasa_archive import SolutionPolicy
 from ..data.schema import PlanetRecord, StarRecord, build_planet_record
@@ -207,6 +212,64 @@ class SystemSlice:
         if state is None:
             return None
         return self.frame.place_planet(state.position)
+
+    # -- coordinates and distances (Explorer C3) --------------------------
+    def inspect_star(self) -> list:
+        """Coordinate and distance rows for the host star.
+
+        Empty when the catalogue gave the host no sky position at all. It is
+        not a row list of zeros: a star with no position is not a star at
+        the origin.
+        """
+        return star_coordinate_rows(self.star.position)
+
+    def inspect_planet(self, record: PlanetRecord, time_jd: float) -> list:
+        """Coordinate and distance rows for one planet at ``time_jd``.
+
+        The position handed to the inspector is ``state.position`` - the
+        propagator's float64 vector in AU - and never anything that has been
+        through the scene builder. That is the whole C3 contract, and it is
+        enforced here at the one point where the two layers meet: this
+        method has a render-ready position available in
+        :meth:`framed_position` and deliberately does not use it.
+        """
+        state = self.state(record, time_jd)
+        rows = planet_distance_rows(
+            record.elements,
+            None if state is None else state.position,
+            host=self.star.position,
+        )
+        # Every instantaneous row above is only as meaningful as the phase it
+        # was evaluated at, so the qualifier travels with them rather than
+        # being left for the caller to remember.
+        solution = self.phase(record, time_jd)
+        rows.append(
+            NoteRow(
+                "Phase provenance",
+                solution.status.label,
+                status=Status.MEASURED
+                if solution.status is PhaseStatus.CONSTRAINED
+                else Status.ASSUMED_FOR_VISUALIZATION
+                if solution.status is PhaseStatus.ASSUMED
+                else Status.DERIVED
+                if solution.status is PhaseStatus.PARTIALLY_CONSTRAINED
+                else Status.UNKNOWN,
+            )
+        )
+        return rows
+
+    def describe_coordinates(self, record: PlanetRecord, time_jd: float) -> list[str]:
+        """The C3 inspector as text, host rows then planet rows."""
+        lines = ["COORDINATES AND DISTANCES", "  Host: {0}".format(self.star.name)]
+        lines += ["    " + row.format() for row in self.inspect_star()]
+        if not self.star.position or not self.star.position.has_distance:
+            lines.append(
+                "    Absolute position unavailable: this system is drawn in "
+                "its own frame and claims no distance from Earth."
+            )
+        lines += ["", "  Planet: {0}".format(record.name)]
+        lines += ["    " + row.format() for row in self.inspect_planet(record, time_jd)]
+        return lines
 
     # -- diagnostics ------------------------------------------------------
     def energy_check(self, record: PlanetRecord, time_jd: float) -> dict | None:

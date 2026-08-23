@@ -308,3 +308,21 @@ def test_rendering_still_works_at_the_clamped_sample_count():
         assert int((image.sum(axis=2) > 24).sum()) > 100
     finally:
         renderer.release()
+
+
+def test_the_test_job_names_the_coordinate_inspector_step(workflow):
+    """C3 is auditable on its own line, not only inside the total.
+
+    The C3 contract - a distance that does not move when the camera does -
+    is the kind of thing that is easy to break in an unrelated rendering
+    change. A named step means the break is legible on the CI page instead
+    of being one failure inside a full-suite run.
+    """
+    steps = _steps(workflow, "tests")
+    named = [s for s in steps if "Explorer C3" in s.get("name", "")]
+    assert named, [s.get("name") for s in steps]
+    assert "test_explorer_c3.py" in named[0]["run"]
+
+    # And it runs before the full suite, so the specific signal arrives first.
+    names = [s.get("name", "") for s in steps]
+    assert names.index(named[0]["name"]) < names.index("Full test suite")
