@@ -201,8 +201,8 @@ A final time-layer review accepted the split and raised two more:
 
 | Item | Status |
 |---|---|
-| C1 habitable-zone overlay | done - `RenderZone` + the `zone` shader program; the band is the physics layer's own boundaries, drawn as a section through the shell |
-| C2 orbital orientation overlay | not started |
+| C1 habitable-zone overlay | done - `RenderZone` + the `zone` shader program; the band is the physics layer's own boundaries, drawn as a cross-section of the shell in the system reference plane, with the two boundaries drawn as lines. See [`explorer-c.md`](explorer-c.md) |
+| C2 orbital orientation overlay | done - `RenderGuide` + `GuideStyle`; plane, normal, line of nodes, periapsis and inclination for the selected orbit, all built from the production `R_z(Omega) R_x(i) R_z(omega)`. Measured draws solid, derived solid and labelled, assumed dashed, unknown not at all unless the normalisation is asked for. See [`explorer-c.md`](explorer-c.md) |
 | C3 distance and coordinate inspector | not started |
 | C4 scientific plot integration (HR diagram, blackbody, spectra) | not started |
 

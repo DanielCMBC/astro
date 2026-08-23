@@ -13,7 +13,7 @@ invent an orbit.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import astropy.units as u
 import numpy as np
@@ -22,18 +22,37 @@ from ..assets.procedural import planet_material, star_display_color
 from ..coordinates.floating_origin import Scale, SceneGraph
 from ..coordinates.system_frame import SystemFrame
 from ..physics.orbital_elements import position_at_mean_anomaly
+from ..physics.orientation import (
+    inclination_arc,
+    node_line,
+    orbit_normal,
+    orbit_plane_ring,
+    periapsis_direction,
+    reference_plane_ring,
+)
 from ..provenance import Status
 from .materials import material_for
-from .renderer import RenderOrbit, RenderPlanet, RenderStar, RenderZone, SceneDescription
+from .renderer import (
+    GuideStyle,
+    RenderGuide,
+    RenderOrbit,
+    RenderPlanet,
+    RenderStar,
+    RenderZone,
+    SceneDescription,
+)
 
 __all__ = [
     "build_system_scene",
     "build_frame_scene",
     "orbit_path",
     "habitable_zone_overlay",
+    "orientation_guides",
+    "OrientationOverlay",
     "display_radius_au",
     "DisplayScale",
     "HABITABLE_ZONE_DISCLAIMER",
+    "ORIENTATION_DISCLAIMER",
 ]
 
 #: Bodies drawn to scale in an AU-wide view would be invisible, so radii are
@@ -197,10 +216,11 @@ def habitable_zone_overlay(
     or a temperature outside the range the coefficients were fitted for. A
     missing zone is drawn as nothing, never as a default ring.
 
-    The band is a flat annulus on the frame's reference plane. The zone is
-    really a spherical shell - it is a range of distances from the star, not
-    a region of one plane - so the annulus is a section through it, and the
-    caller says so in an annotation.
+    The band is a flat annulus on the frame's reference plane: a
+    *cross-section* of the zone, not the zone itself. The physical region is
+    a spherical shell around the star - a range of radial distances, not a
+    region of one plane - and the caller says so in an annotation rather
+    than leaving the flat band to imply otherwise.
     """
     if zone is None or not zone.is_known:
         return None
@@ -226,6 +246,336 @@ def habitable_zone_overlay(
         label="habitable zone",
     )
 
+
+# ==========================================================================
+# Orientation guides (Explorer C2)
+# ==========================================================================
+
+#: Said in words wherever a guide is drawn from a normalised element. The
+#: honest problem C2 exists to solve is not drawing lines; it is that a line
+#: drawn from an angle nobody measured looks exactly like one drawn from an
+#: angle somebody did.
+ORIENTATION_DISCLAIMER = (
+    "A dashed guide is a display normalisation, not an observation: the "
+    "element behind it was never published, or the convention it was "
+    "published under was never stated."
+)
+
+#: Guide colours. Colour is deliberately *not* how provenance is carried -
+#: a colour-blind viewer, a greyscale print or a screenshot would all lose
+#: it. Stroke style carries it and the annotations say it in words; colour
+#: only separates one guide from another.
+GUIDE_REFERENCE_PLANE = (0.62, 0.62, 0.64, 0.40)
+GUIDE_ORBIT_PLANE = (0.58, 0.78, 0.96, 0.60)
+GUIDE_ORBIT_NORMAL = (0.58, 0.78, 0.96, 0.85)
+GUIDE_NODE_LINE = (0.96, 0.82, 0.45, 0.85)
+GUIDE_PERIAPSIS = (0.98, 0.55, 0.42, 0.90)
+GUIDE_INCLINATION = (0.70, 0.92, 0.72, 0.80)
+
+#: Below this the inclination arc is a degenerate point rather than an arc,
+#: and a coplanar orbit is better said than drawn.
+COPLANAR_TOLERANCE_RAD = 1.0e-4
+
+
+def _arrow_polyline(origin, tip, *, head_fraction: float = 0.14) -> np.ndarray:
+    """An arrow as a single polyline: shaft, then back along each barb.
+
+    One primitive rather than three keeps a guide batchable as one indexed
+    line strip, and the doubled-back segments cost two extra vertices.
+    """
+    origin = np.asarray(origin, dtype=np.float64).reshape(3)
+    tip = np.asarray(tip, dtype=np.float64).reshape(3)
+    shaft = tip - origin
+    length = float(np.linalg.norm(shaft))
+    if length <= 0.0:
+        return np.stack([origin, tip])
+
+    direction = shaft / length
+    # Any vector not parallel to the shaft gives a barb plane; the pole
+    # serves except for an arrow that is itself the pole.
+    reference = np.array([0.0, 0.0, 1.0])
+    if abs(float(direction @ reference)) > 0.95:
+        reference = np.array([1.0, 0.0, 0.0])
+    perpendicular = np.cross(direction, reference)
+    perpendicular /= np.linalg.norm(perpendicular)
+
+    head = length * head_fraction
+    back = tip - head * direction
+    spread = 0.45 * head * perpendicular
+    return np.stack([origin, tip, back + spread, tip, back - spread])
+
+
+def _closed(points) -> np.ndarray:
+    """Repeat the first point so a ring is drawn closed."""
+    array = np.asarray(points, dtype=np.float64)
+    return np.vstack([array, array[:1]])
+
+
+def _guide_style(*parameters) -> GuideStyle:
+    """Solid unless something behind the guide was assumed.
+
+    DERIVED is drawn solid: an argument of periastron converted from the
+    host star's reflex orbit by 180 degrees is a real orientation, reached
+    by a stated transform from a stated convention. It is still labelled
+    derived - but it is not a guess, and dashing it would say it was.
+    """
+    return (
+        GuideStyle.DASHED
+        if any(p.status is Status.ASSUMED_FOR_VISUALIZATION for p in parameters)
+        else GuideStyle.SOLID
+    )
+
+
+def _provenance_word(parameter) -> str:
+    if parameter.status is Status.MEASURED:
+        return "measured"
+    if parameter.status is Status.DERIVED:
+        return "derived"
+    if parameter.status is Status.ASSUMED_FOR_VISUALIZATION:
+        return "assumed for display"
+    return "unknown"
+
+
+@dataclass
+class OrientationOverlay:
+    """Finished orientation guides plus the words that qualify them.
+
+    The two travel together on purpose. A guide without its annotation is
+    the failure this overlay exists to prevent: once it is a line on a
+    screen, a normalised node is indistinguishable from a measured one, and
+    only the text says which it was.
+    """
+
+    guides: list = field(default_factory=list)
+    annotations: list = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.guides)
+
+    def guide(self, name: str):
+        """One guide by the short name it was built under, or None."""
+        return next(
+            (g for g in self.guides if g.identifier.rsplit(":", 1)[-1] == name), None
+        )
+
+
+def orientation_guides(
+    elements,
+    frame,
+    *,
+    radius: float | None = None,
+    samples: int = 240,
+    identifier: str = "orbit",
+    show_normalised: bool = False,
+    label: str = "",
+) -> OrientationOverlay:
+    """Orientation overlays for one orbit, with their provenance in words.
+
+    Drawn for a *selected* orbit rather than for every orbit at once:
+
+    * the system reference plane, and the orbital plane against it;
+    * the orbit normal;
+    * the line of nodes;
+    * the periapsis direction;
+    * an inclination indicator swept about the nodes.
+
+    Every one of them is built from
+    :mod:`astro_explorer.physics.orientation` - the same rotation the
+    propagator uses - so a guide cannot express a different reading of
+    ``Omega``, ``i`` and ``omega`` from the orbit it is drawn against.
+
+    What may be drawn at all is decided here, from provenance:
+
+    ==========================  =============================================
+    the defining element is     the guide is
+    ==========================  =============================================
+    MEASURED                    drawn solid
+    DERIVED                     drawn solid, and labelled derived
+    ASSUMED_FOR_VISUALIZATION   drawn dashed, and labelled assumed
+    UNKNOWN                     **not drawn**, unless ``show_normalised``
+    ==========================  =============================================
+
+    ``show_normalised`` is the switch for "show me where the display put the
+    things nobody measured". It is off by default, because the guide it
+    controls - a line of nodes for an orbit whose node was never observed -
+    is the most misreadable object in this overlay: it looks like a
+    direction on the sky, and there is no such direction to look at.
+
+    A guide whose own element is known but whose *placement* rests on a
+    normalised one is a different case, and is drawn dashed rather than
+    withheld: the inclination of a transiting planet is a real measurement
+    even though the azimuth it is drawn at is not.
+    """
+    overlay = OrientationOverlay()
+    display = elements.for_display()
+
+    axis = display.semimajor_axis.value_in(u.au)
+    if axis is None or not np.isfinite(axis) or axis <= 0.0:
+        overlay.annotations.append(
+            "{0}: no semimajor axis published or derivable, so there is no "
+            "orbit to orient.".format(label or elements.name or "this orbit")
+        )
+        return overlay
+
+    eccentricity = display.eccentricity.value_in(u.dimensionless_unscaled, 0.0)
+    if radius is None:
+        radius = axis * (1.0 + eccentricity)
+
+    inclination = display.inclination
+    node = display.longitude_of_ascending_node
+    periastron = display.argument_of_periastron
+
+    i_rad = inclination.value_in(u.rad, 0.0)
+    node_rad = node.value_in(u.rad, 0.0)
+    omega_rad = periastron.value_in(u.rad, 0.0)
+
+    i_known = elements.inclination.is_known
+    node_known = elements.longitude_of_ascending_node.is_known
+    omega_known = elements.argument_of_periastron.is_known
+
+    def add(name, points, style, color, text):
+        overlay.guides.append(
+            RenderGuide(
+                identifier="{0}:{1}".format(identifier, name),
+                points_local=frame.place_planet(points).to_render(),
+                style=style,
+                color=color,
+                label=text,
+            )
+        )
+
+    # -- the reference plane ---------------------------------------------
+    # Not a claim about this system: it is the plane the catalogue's angles
+    # are measured against, which for a transiting exoplanet is the sky.
+    add(
+        "reference-plane",
+        _closed(reference_plane_ring(radius, samples)),
+        GuideStyle.SOLID,
+        GUIDE_REFERENCE_PLANE,
+        "system reference plane",
+    )
+    overlay.annotations.append(
+        "System reference plane: the plane inclination is measured against - "
+        "the plane of the sky for a transiting orbit, so i = 90 deg is "
+        "edge-on. Which direction within it is +x is a display convention, "
+        "not a measured direction on the sky."
+    )
+
+    # -- the orbital plane and its normal --------------------------------
+    if i_known or show_normalised:
+        style = _guide_style(inclination, node)
+        add(
+            "orbit-plane",
+            _closed(orbit_plane_ring(i_rad, node_rad, radius, samples)),
+            style,
+            GUIDE_ORBIT_PLANE,
+            "orbital plane",
+        )
+        add(
+            "orbit-normal",
+            _arrow_polyline(np.zeros(3), orbit_normal(i_rad, node_rad) * radius * 0.65),
+            style,
+            GUIDE_ORBIT_NORMAL,
+            "orbit normal",
+        )
+        overlay.annotations.append(
+            "Inclination: {0} ({1}); the orbital plane and its normal are "
+            "drawn from it.".format(
+                inclination.to(u.deg).format(with_status=False),
+                _provenance_word(elements.inclination if i_known else inclination),
+            )
+        )
+        if not node_known:
+            overlay.annotations.append(
+                "The tilt of that plane is measured; the direction it is "
+                "tilted towards is not. The plane is therefore drawn dashed, "
+                "and may be rotated about the line of sight from the true one."
+            )
+
+    # -- the inclination indicator ---------------------------------------
+    if (i_known or show_normalised) and abs(i_rad) > COPLANAR_TOLERANCE_RAD:
+        add(
+            "inclination",
+            inclination_arc(i_rad, node_rad, radius * 0.45, max(8, samples // 6)),
+            _guide_style(inclination, node),
+            GUIDE_INCLINATION,
+            "inclination {0}".format(inclination.to(u.deg).format(with_status=False)),
+        )
+    elif i_known:
+        overlay.annotations.append(
+            "Inclination is zero to within the published precision: the orbit "
+            "lies in the reference plane, so there is no arc to draw."
+        )
+
+    # -- the line of nodes -----------------------------------------------
+    if node_known or show_normalised:
+        add(
+            "ascending-node",
+            node_line(node_rad, radius),
+            _guide_style(node),
+            GUIDE_NODE_LINE,
+            "line of nodes",
+        )
+    if node_known:
+        overlay.annotations.append(
+            "Ascending node: {0} (measured).".format(
+                node.to(u.deg).format(with_status=False)
+            )
+        )
+    else:
+        overlay.annotations.append(
+            "Ascending node: unknown. Display normalisation Omega = 0 deg. "
+            "The absolute rotation of this orbit about the line of sight is "
+            "unconstrained{0}.".format(
+                ", and the normalised line of nodes is drawn dashed"
+                if show_normalised
+                else ", so no line of nodes is drawn"
+            )
+        )
+
+    # -- the periapsis direction -----------------------------------------
+    resolved = elements.argument_of_periapsis_planet
+    if omega_known or show_normalised:
+        tip = periapsis_direction(i_rad, omega_rad, node_rad) * axis * (
+            1.0 - eccentricity
+        )
+        add(
+            "periapsis",
+            _arrow_polyline(np.zeros(3), tip),
+            _guide_style(periastron, inclination, node),
+            GUIDE_PERIAPSIS,
+            "periapsis",
+        )
+    if omega_known:
+        overlay.annotations.append(
+            "Argument of periastron: {0} as catalogued ({1}); drawn as the "
+            "planet's periapsis at {2} ({3}). The arrow ends at the "
+            "periapsis distance, on the orbit.".format(
+                elements.argument_of_periastron.to(u.deg).format(with_status=False),
+                elements.periastron_convention.label,
+                resolved.to(u.deg).format(with_status=False),
+                _provenance_word(resolved),
+            )
+        )
+        if elements.periastron_convention_is_assumed:
+            overlay.annotations.append(
+                "Periapsis direction is assumed, not measured: "
+                + elements.periastron_convention.caveat
+            )
+    else:
+        overlay.annotations.append(
+            "Argument of periastron: unknown, so periapsis has no direction to "
+            "point at{0}.".format(
+                "; the normalised arrow is drawn dashed at omega = 0 deg"
+                if show_normalised
+                else " and no periapsis arrow is drawn"
+            )
+        )
+
+    if any(guide.style is GuideStyle.DASHED for guide in overlay.guides):
+        overlay.annotations.append(ORIENTATION_DISCLAIMER)
+
+    return overlay
 
 def _orbit_is_assumed(elements) -> bool:
     """True when any element used to draw the path was substituted."""
@@ -380,6 +730,8 @@ def build_frame_scene(
     orbit_samples: int = 720,
     draw_habitable_zone: bool = True,
     exaggerate: bool = True,
+    orientation_for: str | None = None,
+    show_normalised_orientation: bool = False,
 ) -> SceneDescription:
     """Build a scene entirely inside one :class:`SystemFrame`.
 
@@ -405,6 +757,15 @@ def build_frame_scene(
         Planet name to mean anomaly in radians. A planet missing from the
         mapping has its orbit drawn but no body placed on it, because its
         phase is not constrained.
+    orientation_for:
+        Name or entity id of the planet whose orientation guides to draw
+        (Explorer C2). Guides are per-selection rather than per-system: six
+        sets of planes and node lines at once would be unreadable, and the
+        question they answer - "how is *this* orbit oriented" - is asked
+        about one planet at a time. ``None`` draws none.
+    show_normalised_orientation:
+        Whether guides for elements nobody published may be drawn, dashed,
+        at their display normalisation. Off by default.
     """
     scene = SceneDescription(unit_label=frame.unit_label)
     mean_anomalies = mean_anomalies or {}
@@ -458,8 +819,10 @@ def build_frame_scene(
         if overlay is not None:
             scene.zones.append(overlay)
             scene.annotations.append(
-                "Habitable zone {0:.3g}-{1:.3g} AU ({2}), drawn as a section "
-                "through the shell on the reference plane. {3}".format(
+                "Habitable-zone cross-section {0:.3g}-{1:.3g} AU ({2}): radial "
+                "irradiation boundaries shown in the system reference plane. "
+                "The physical region is a spherical shell around the star. "
+                "{3}".format(
                     zone.inner.value_in(u.au),
                     zone.outer.value_in(u.au),
                     zone.model,
@@ -533,5 +896,29 @@ def build_frame_scene(
             scene.annotations.append(
                 "{0}: orbit drawn using assumed orientation or eccentricity.".format(record.name)
             )
+
+    # -- orientation guides for the selected orbit -----------------------
+    if orientation_for is not None:
+        selected = next(
+            (
+                record
+                for record in planets
+                if orientation_for in (record.name, str(record.entity_id or ""))
+            ),
+            None,
+        )
+        if selected is not None:
+            overlay = orientation_guides(
+                selected.elements,
+                frame,
+                identifier=str(selected.entity_id or selected.name),
+                show_normalised=show_normalised_orientation,
+                label=selected.name,
+            )
+            scene.guides.extend(overlay.guides)
+            scene.annotations.append(
+                "Orientation guides: {0}.".format(selected.name)
+            )
+            scene.annotations.extend(overlay.annotations)
 
     return scene

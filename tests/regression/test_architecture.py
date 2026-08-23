@@ -139,6 +139,7 @@ def test_no_module_uses_the_wrong_au_to_parsec_factor():
 def test_render_primitives_carry_no_scientific_fields():
     """The renderer cannot decide what it is never told."""
     from astro_explorer.rendering.renderer import (
+        RenderGuide,
         RenderOrbit,
         RenderPlanet,
         RenderStar,
@@ -161,8 +162,15 @@ def test_render_primitives_carry_no_scientific_fields():
         "effective_temperature",
         "inner_au",
         "outer_au",
+        # An orientation guide is finished vectors. Given the angles it
+        # would be a second reading of the catalogue's conventions, free to
+        # disagree with the orbit it is drawn against.
+        "inclination",
+        "argument_of_periastron",
+        "longitude_of_ascending_node",
+        "periastron_convention",
     }
-    for cls in (RenderStar, RenderPlanet, RenderOrbit, RenderZone):
+    for cls in (RenderStar, RenderPlanet, RenderOrbit, RenderZone, RenderGuide):
         assert not (set(cls.__dataclass_fields__) & forbidden), cls.__name__
 
 

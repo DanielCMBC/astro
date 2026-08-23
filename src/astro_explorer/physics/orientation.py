@@ -44,6 +44,12 @@ __all__ = [
     "specific_angular_momentum",
     "node_vector",
     "orbit_normal",
+    "periapsis_direction",
+    "plane_ring",
+    "reference_plane_ring",
+    "orbit_plane_ring",
+    "node_line",
+    "inclination_arc",
 ]
 
 
@@ -291,4 +297,112 @@ def node_vector(longitude_of_ascending_node: float) -> np.ndarray:
             np.sin(longitude_of_ascending_node),
             0.0,
         ]
+    )
+
+
+# ==========================================================================
+# Orientation guide geometry (Explorer C2)
+# ==========================================================================
+#
+# The overlays that show *how an orbit is oriented* - its plane, its normal,
+# its line of nodes, its periapsis direction, its inclination - are built
+# from the same rotation the propagator uses, in this module, rather than
+# from a second interpretation of the angles written in visualization code.
+# That is the whole point of putting them here: there is one reading of
+# ``Omega``, ``i`` and ``omega`` in the program, and a guide that disagreed
+# with the orbit it annotates would be worse than no guide at all.
+#
+# Everything below returns plain float64 arrays in the same length unit as
+# the radius it was given. Which of these guides may be *drawn*, and in what
+# style, depends on whether the angles were measured, derived or assumed -
+# and that decision belongs to the layer that owns provenance, not here.
+
+
+def periapsis_direction(
+    inclination: float,
+    argument_of_periapsis: float,
+    longitude_of_ascending_node: float,
+) -> np.ndarray:
+    """Unit vector from the focus towards periapsis.
+
+    The perifocal ``+x`` axis carried through the full rotation, so it
+    agrees with :func:`perifocal_position` at ``E = 0`` by construction.
+    """
+    rotation = rotation_perifocal_to_inertial(
+        inclination, argument_of_periapsis, longitude_of_ascending_node
+    )
+    return rotation @ np.array([1.0, 0.0, 0.0])
+
+
+def plane_ring(rotation: np.ndarray, radius: float, samples: int = 180) -> np.ndarray:
+    """A circle of ``radius`` in the plane ``rotation`` maps ``z = 0`` onto.
+
+    Returns ``(samples, 3)``, not closed: the first point is not repeated at
+    the end. Whoever draws it decides how to close it.
+    """
+    angle = np.linspace(0.0, 2.0 * np.pi, int(samples), endpoint=False)
+    circle = np.stack(
+        [radius * np.cos(angle), radius * np.sin(angle), np.zeros_like(angle)], axis=-1
+    )
+    return _apply(np.asarray(rotation, dtype=np.float64), circle)
+
+
+def reference_plane_ring(radius: float, samples: int = 180) -> np.ndarray:
+    """A circle in the reference plane itself (``z = 0``)."""
+    return plane_ring(np.eye(3), radius, samples)
+
+
+def orbit_plane_ring(
+    inclination: float,
+    longitude_of_ascending_node: float,
+    radius: float,
+    samples: int = 180,
+) -> np.ndarray:
+    """A circle of ``radius`` lying in the orbital plane.
+
+    Independent of ``omega``, exactly as :func:`orbit_normal` is: rotating
+    periapsis within the plane cannot tilt the plane. At ``i = 0`` this is
+    the reference-plane ring.
+    """
+    return plane_ring(
+        rotation_perifocal_to_inertial(inclination, 0.0, longitude_of_ascending_node),
+        radius,
+        samples,
+    )
+
+
+def node_line(longitude_of_ascending_node: float, radius: float) -> np.ndarray:
+    """The line of nodes, from the descending node to the ascending node.
+
+    Two points, ``(2, 3)``. The line lies in the reference plane whatever
+    the inclination, because that is what the nodes are: where the orbit
+    crosses it. The ascending node is the second point, so a caller can
+    label the end that means something.
+    """
+    direction = node_vector(longitude_of_ascending_node)
+    return np.stack([-radius * direction, radius * direction])
+
+
+def inclination_arc(
+    inclination: float,
+    longitude_of_ascending_node: float,
+    radius: float,
+    samples: int = 48,
+) -> np.ndarray:
+    """An arc from the reference plane up to the orbital plane.
+
+    Swept about the line of nodes, so it subtends exactly ``i`` and lies in
+    the plane perpendicular to the nodes - which is where the inclination is
+    actually defined. It starts in the reference plane, a quarter turn from
+    the ascending node, and ends on the orbital plane.
+
+    A zero-inclination orbit gives a degenerate arc that is a single point
+    repeated; a caller that would rather draw nothing should check ``i``
+    itself rather than the returned array.
+    """
+    reference = rotation_z(longitude_of_ascending_node) @ np.array([0.0, 1.0, 0.0])
+    pole = np.array([0.0, 0.0, 1.0])
+    angle = np.linspace(0.0, float(inclination), int(samples))
+    return radius * (
+        np.cos(angle)[:, None] * reference[None, :] + np.sin(angle)[:, None] * pole[None, :]
     )

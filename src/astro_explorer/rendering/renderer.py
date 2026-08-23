@@ -15,16 +15,19 @@ the contract can be tested headlessly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
 
 __all__ = [
     "PROGRAMS",
+    "GuideStyle",
     "RenderStar",
     "RenderPlanet",
     "RenderOrbit",
     "RenderZone",
+    "RenderGuide",
     "SceneDescription",
     "ShaderLibrary",
     "SHADER_DIR",
@@ -128,10 +131,17 @@ class RenderZone:
     in the active frame's display units, so the renderer draws a band
     between two closed loops and is told nothing about what the band means:
     no radii in AU, no luminosity, no temperature, no model name, no
-    provenance. Whether the region exists at all was decided upstream.
+    provenance. Whether the region exists at all was decided upstream, as
+    was whether the flat band is a cross-section of something rounder.
 
     The two rings must have the same vertex count, because the band is
     built by pairing them index for index.
+
+    Both colours are consumed: the fill spans the band, and ``edge_color``
+    draws the two boundary loops as lines. The edges exist because the
+    boundaries are the scientific content - the fill is only what lies
+    between them - so a soft wash with no visible limit understates how
+    sharp the model's statement is.
     """
 
     identifier: str
@@ -139,7 +149,7 @@ class RenderZone:
     outer_points_local: np.ndarray  # (N, 3) float32
     #: Fill colour. Alpha is a display choice and never a scientific one.
     color: tuple[float, float, float, float] = (0.36, 0.78, 0.52, 0.13)
-    #: Edge colour for the two boundary loops.
+    #: Colour of the two boundary loops, drawn as lines after the fill.
     edge_color: tuple[float, float, float, float] = (0.45, 0.9, 0.62, 0.5)
     label: str = ""
 
@@ -160,6 +170,74 @@ class RenderZone:
         return int(self.inner_points_local.shape[0])
 
 
+class GuideStyle(str, Enum):
+    """How a guide line is stroked.
+
+    Two visual states, and only two, because the distinction they carry has
+    to survive being seen at a glance and in a still image: a solid line is
+    a statement about the sky, a dashed one is not.
+
+    What made a particular guide dashed - an element nobody published, a
+    convention the catalogue never stated - is not in here. The renderer
+    strokes what it is given; the reason is words, and words belong to the
+    UI.
+    """
+
+    SOLID = "SOLID"
+    DASHED = "DASHED"
+
+    @property
+    def is_dashed(self) -> bool:
+        return self is GuideStyle.DASHED
+
+
+@dataclass(frozen=True)
+class RenderGuide:
+    """A finished orientation guide: a polyline, a stroke style, a label.
+
+    Used for the orbital-orientation overlays - the orbit plane, the orbit
+    normal, the line of nodes, the periapsis direction, the inclination
+    indicator. Every one of them arrives as points already computed by the
+    physics layer from the *same* rotation the propagator uses.
+
+    Note what is absent, and why it matters more here than anywhere else:
+    there is no inclination, no ``omega``, no ``Omega``, no eccentricity.
+    An overlay that re-read those angles would be a second interpretation of
+    the catalogue's conventions, free to disagree with the orbit it is drawn
+    against - and it would disagree silently, since both would look
+    plausible. So the renderer is given vectors, not angles.
+
+    ``points_local`` is a polyline: consecutive points are joined, and a
+    closed ring is closed by repeating its first point at the end. An arrow
+    is one polyline too - shaft out to the tip, then back along each barb -
+    so a guide is always exactly one primitive.
+    """
+
+    identifier: str
+    points_local: np.ndarray  # (N, 3) float32
+    style: GuideStyle = GuideStyle.SOLID
+    color: tuple[float, float, float, float] = (0.72, 0.78, 0.92, 0.85)
+    label: str = ""
+
+    def __post_init__(self) -> None:
+        points = np.asarray(self.points_local, dtype=np.float32)
+        if points.ndim != 2 or points.shape[1] != 3:
+            raise ValueError("guide points must be an (N, 3) array")
+        if points.shape[0] < 2:
+            raise ValueError("a guide needs at least 2 points to be a line")
+        if not np.all(np.isfinite(points)):
+            raise ValueError(
+                "guide points must be finite; an unknown orientation must be "
+                "resolved or excluded before it reaches the renderer"
+            )
+        object.__setattr__(self, "points_local", np.ascontiguousarray(points))
+        object.__setattr__(self, "style", GuideStyle(self.style))
+
+    @property
+    def vertex_count(self) -> int:
+        return int(self.points_local.shape[0])
+
+
 @dataclass
 class SceneDescription:
     """Everything one frame needs, in display units of the active frame."""
@@ -169,13 +247,17 @@ class SceneDescription:
     orbits: list[RenderOrbit] = field(default_factory=list)
     #: Scientific regions drawn as flat bands, e.g. the habitable zone.
     zones: list[RenderZone] = field(default_factory=list)
+    #: Orientation guides for the selected orbit, e.g. the line of nodes.
+    guides: list[RenderGuide] = field(default_factory=list)
     #: Name of the active frame's unit, for the on-screen scale bar.
     unit_label: str = "AU"
     #: Free-text notes the UI overlays, e.g. which values were assumed.
     annotations: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not (self.stars or self.planets or self.orbits or self.zones)
+        return not (
+            self.stars or self.planets or self.orbits or self.zones or self.guides
+        )
 
     def bounding_radius(self) -> float:
         """Largest distance from the origin, for framing the camera."""
@@ -187,6 +269,9 @@ class SceneDescription:
         for zone in self.zones:
             ring = zone.outer_points_local
             points.append(ring[np.argmax(np.linalg.norm(ring, axis=1))])
+        for guide in self.guides:
+            line = guide.points_local
+            points.append(line[np.argmax(np.linalg.norm(line, axis=1))])
         if not points:
             return 1.0
         return float(max(np.linalg.norm(np.asarray(p, dtype=np.float64)) for p in points)) or 1.0

@@ -197,6 +197,13 @@ class Explorer:
     #: an older token is stale and must be discarded.
     generation: int = 0
 
+    #: Whether the selected orbit's orientation guides may include elements
+    #: nobody published, drawn dashed at their display normalisation
+    #: (Explorer C2). Off by default: a line of nodes for an orbit whose
+    #: node was never observed looks like a direction on the sky, and there
+    #: is no such direction to look at.
+    show_normalised_orientation: bool = False
+
     #: Absolute camera position in parsecs, float64. The single source of
     #: truth for where the viewer is while the camera is anywhere at all;
     #: the camera's own target/distance are expressed in whichever frame is
@@ -586,8 +593,20 @@ class Explorer:
             )
             anomalies = slice_.mean_anomalies(time_jd)
 
+        # Orientation guides follow the selection: they answer "how is
+        # this orbit oriented", which is a question about one planet, and
+        # drawing every planet's planes at once would answer it for none.
         scene = build_frame_scene(
-            self.system, self.system_star, self.system_records, mean_anomalies=anomalies
+            self.system,
+            self.system_star,
+            self.system_records,
+            mean_anomalies=anomalies,
+            orientation_for=(
+                self.selection.entity_id
+                if self.selection is not None and self.selection.is_planet
+                else None
+            ),
+            show_normalised_orientation=self.show_normalised_orientation,
         )
         scene.annotations.insert(
             0,

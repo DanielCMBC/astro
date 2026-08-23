@@ -113,7 +113,13 @@ jobs:
       - name: Explorer navigation, picking and label tests
         run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_explorer.py tests/regression/test_explorer_b.py tests/regression/test_legacy_isolation.py -q
 
-      - name: Render the slice, a full system and the approach
+      # The scientific overlays: the habitable-zone band with its
+      # boundary rings, and the orientation guides whose whole purpose is
+      # that a normalised element must not be drawn like a measured one.
+      - name: Scientific overlay tests (habitable zone, orientation)
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" pytest tests/regression/test_explorer_c.py tests/regression/test_explorer_c2.py -q
+
+      - name: Render the slice, a full system, the approach and the orientation cases
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
             python -m astro_explorer.app.slice_demo --out artifacts
@@ -121,6 +127,8 @@ jobs:
             python -m astro_explorer.app.system_demo --host Kepler-11 --out artifacts
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
             python -m astro_explorer.app.explorer_demo --frames 6 --out artifacts
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python -m astro_explorer.app.orientation_demo --out artifacts
 
       # The render steps above exit non-zero on failure, but an empty
       # output directory would still slip past if a demo ever changed its
@@ -129,8 +137,8 @@ jobs:
         run: |
           shopt -s nullglob
           frames=(artifacts/*.png)
-          if [ ${#frames[@]} -lt 8 ]; then
-            echo "expected at least 8 rendered frames, found ${#frames[@]}"
+          if [ ${#frames[@]} -lt 11 ]; then
+            echo "expected at least 11 rendered frames, found ${#frames[@]}"
             ls -la artifacts || true
             exit 1
           fi

@@ -221,6 +221,7 @@ resource in `assets/manager.py` is enough to get it bundled.
 * [`docs/multi-planet.md`](docs/multi-planet.md)
 * [`docs/explorer.md`](docs/explorer.md)
 * [`docs/explorer-b.md`](docs/explorer-b.md)
+* [`docs/explorer-c.md`](docs/explorer-c.md)
 * [`docs/legacy-3d-prototype.md`](docs/legacy-3d-prototype.md)
 * [`docs/architecture.md`](docs/architecture.md)
 * [`docs/physics.md`](docs/physics.md)

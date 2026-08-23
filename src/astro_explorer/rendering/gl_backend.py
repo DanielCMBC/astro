@@ -97,9 +97,16 @@ class RenderSettings:
     orbit_line_width: float = 1.6
     #: Screen-space dash period for an orbit drawn from assumed elements.
     dash_period: float = 0.035
+    #: Line width of a zone's two boundary loops.
+    zone_edge_width: float = 1.4
     draw_orbits: bool = True
     #: Scientific region overlays (the habitable zone).
     draw_zones: bool = True
+    #: Orientation guides for the selected orbit (Explorer C2).
+    draw_guides: bool = True
+    guide_line_width: float = 1.5
+    #: Screen-space dash period for a guide whose orientation was assumed.
+    guide_dash_period: float = 0.02
 
 
 class GLRenderer:
@@ -136,6 +143,7 @@ class GLRenderer:
         self.last_planet_draw_calls = 0
         self.last_orbit_draw_calls = 0
         self.last_zone_draw_calls = 0
+        self.last_guide_draw_calls = 0
 
     # -- setup -----------------------------------------------------------
     def _program(self, name: str):
@@ -283,6 +291,7 @@ class GLRenderer:
         self.last_planet_draw_calls = 0
         self.last_orbit_draw_calls = 0
         self.last_zone_draw_calls = 0
+        self.last_guide_draw_calls = 0
         self._draw_stars(scene, view_projection, camera_position, time)
         self._draw_planets(scene, view_projection, camera_position, star_position)
         # Zones first: they are translucent ground the orbits and bodies
@@ -291,6 +300,10 @@ class GLRenderer:
             self._draw_zones(scene, view_projection)
         if self.settings.draw_orbits:
             self._draw_orbits(scene, view_projection)
+        # Guides last: they annotate the orbit, so they are read on top of
+        # it rather than through it.
+        if self.settings.draw_guides:
+            self._draw_guides(scene, view_projection)
 
         if self._msaa is not None:
             self.ctx.copy_framebuffer(self._resolve, self._msaa)
@@ -399,6 +412,7 @@ class GLRenderer:
 
         program = self._program("orbit")
         program["u_view_projection"].write(view_projection)
+        previous_line_width = self.ctx.line_width
         self.ctx.line_width = self.settings.orbit_line_width
         # Orbit paths are translucent overlays and must not occlude one
         # another, so depth writes are off while they are drawn.
@@ -419,17 +433,26 @@ class GLRenderer:
         buffer.release()
         index_buffer.release()
 
+        self.ctx.line_width = previous_line_width
         self.ctx.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
 
     def _draw_zones(self, scene, view_projection) -> None:
-        """Every zone in one triangle draw call.
+        """Every zone as one triangle draw plus one line draw.
 
         The band between a zone's two rings is triangulated here rather than
         in a geometry stage, so the GPU is handed finished vertices and has
-        no say in where a boundary sits. Depth writes stay off: a zone is an
-        overlay lying in the reference plane, and orbits that pass through
-        it must remain visible on both sides.
+        no say in where a boundary sits. The boundary loops are then drawn
+        as lines in the zone's ``edge_color``, batched the same way: the
+        edges are where the model's actual statement lies, and a fill that
+        fades out with no visible limit would make a hard boundary look
+        like a preference.
+
+        Both draws happen inside one scoped pass. Depth writes stay off - a
+        zone is an overlay lying in the reference plane, and orbits that
+        pass through it must remain visible on both sides - and every state
+        this pass changed is restored before it returns, so nothing leaks
+        into the orbit pass that follows.
         """
         import moderngl
 
@@ -437,26 +460,42 @@ class GLRenderer:
             return
 
         vertices, indices = self._batch_zones(scene)
-        if indices.size == 0:
+        edge_vertices, edge_indices = self._batch_zone_edges(scene)
+        if indices.size == 0 and edge_indices.size == 0:
             return
 
         program = self._program("zone")
         program["u_view_projection"].write(view_projection)
+        layout, names = self._binding(program, self._ZONE_FIELDS)
+
+        previous_line_width = self.ctx.line_width
         self.ctx.enable(moderngl.BLEND)
         self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
         self.ctx.depth_mask = False
 
-        buffer = self.ctx.buffer(vertices.tobytes())
-        index_buffer = self.ctx.buffer(indices.tobytes())
-        layout, names = self._binding(program, self._ZONE_FIELDS)
-        vao = self.ctx.vertex_array(program, [(buffer, layout, *names)], index_buffer)
-        vao.render(moderngl.TRIANGLES)
-        self.last_zone_draw_calls = 1
+        draws = 0
+        for data, index_data, primitive in (
+            (vertices, indices, moderngl.TRIANGLES),
+            (edge_vertices, edge_indices, moderngl.LINES),
+        ):
+            if index_data.size == 0:
+                continue
+            if primitive is moderngl.LINES:
+                self.ctx.line_width = self.settings.zone_edge_width
 
-        vao.release()
-        buffer.release()
-        index_buffer.release()
+            buffer = self.ctx.buffer(data.tobytes())
+            index_buffer = self.ctx.buffer(index_data.tobytes())
+            vao = self.ctx.vertex_array(program, [(buffer, layout, *names)], index_buffer)
+            vao.render(primitive)
+            draws += 1
 
+            vao.release()
+            buffer.release()
+            index_buffer.release()
+
+        self.last_zone_draw_calls = draws
+
+        self.ctx.line_width = previous_line_width
         self.ctx.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
 
@@ -510,6 +549,46 @@ class GLRenderer:
             np.ascontiguousarray(np.concatenate(index_blocks), dtype=np.uint32),
         )
 
+    def _batch_zone_edges(self, scene):
+        """Pack every zone's two boundary loops into one line batch.
+
+        Same vertex layout as the fill, so one program and one binding serve
+        both draws. Each ring is closed explicitly - segment ``i -> i+1``
+        modulo the vertex count - because a LINE_STRIP would join the inner
+        ring to the outer one and the two zones of different systems to each
+        other.
+        """
+        vertex_blocks = []
+        index_blocks = []
+        offset = 0
+
+        for zone in scene.zones:
+            count = zone.vertex_count
+            if count < 3:
+                continue
+
+            block = np.empty((2 * count, 7), dtype=np.float32)
+            block[0:count, 0:3] = zone.inner_points_local
+            block[count:, 0:3] = zone.outer_points_local
+            block[:, 3:7] = zone.edge_color
+            vertex_blocks.append(block)
+
+            i = np.arange(count, dtype=np.uint32)
+            j = (i + 1) % count
+            for base in (0, count):
+                index_blocks.append(
+                    np.stack([i + base + offset, j + base + offset], axis=-1).ravel()
+                )
+            offset += 2 * count
+
+        if not vertex_blocks:
+            return np.zeros((0, 7), dtype=np.float32), np.zeros(0, dtype=np.uint32)
+
+        return (
+            np.ascontiguousarray(np.vstack(vertex_blocks), dtype=np.float32),
+            np.ascontiguousarray(np.concatenate(index_blocks), dtype=np.uint32),
+        )
+
     #: Interleaved layout of the batched orbit buffer.
     _ORBIT_FIELDS = [
         ("in_position", "3f", 12),
@@ -547,6 +626,93 @@ class GLRenderer:
 
             # One line segment per consecutive pair, indexed so the strips
             # never join across orbits.
+            starts = np.arange(count - 1, dtype=np.uint32) + offset
+            index_blocks.append(np.stack([starts, starts + 1], axis=-1).ravel())
+            offset += count
+
+        if not vertex_blocks:
+            return np.zeros((0, 9), dtype=np.float32), np.zeros(0, dtype=np.uint32)
+
+        return (
+            np.ascontiguousarray(np.vstack(vertex_blocks), dtype=np.float32),
+            np.ascontiguousarray(np.concatenate(index_blocks), dtype=np.uint32),
+        )
+
+    def _draw_guides(self, scene, view_projection) -> None:
+        """Every orientation guide in one indexed line draw.
+
+        Guides are lines with a stroke style, which is exactly what the
+        orbit program already draws, so they share it rather than
+        duplicating a shader: position, cumulative arc length, colour, and a
+        dash period of zero meaning solid. A guide's dash is the visible
+        difference between an orientation that was measured and one that was
+        normalised for display, so it travels per vertex and survives
+        batching.
+
+        Every state this pass changes is restored before it returns.
+        """
+        import moderngl
+
+        if not scene.guides:
+            return
+
+        vertices, indices = self._batch_guides(scene)
+        if indices.size == 0:
+            return
+
+        program = self._program("orbit")
+        program["u_view_projection"].write(view_projection)
+
+        previous_line_width = self.ctx.line_width
+        self.ctx.line_width = self.settings.guide_line_width
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.ctx.depth_mask = False
+
+        buffer = self.ctx.buffer(vertices.tobytes())
+        index_buffer = self.ctx.buffer(indices.tobytes())
+        layout, names = self._binding(program, self._ORBIT_FIELDS)
+        vao = self.ctx.vertex_array(program, [(buffer, layout, *names)], index_buffer)
+        vao.render(moderngl.LINES)
+        self.last_guide_draw_calls = 1
+
+        vao.release()
+        buffer.release()
+        index_buffer.release()
+
+        self.ctx.line_width = previous_line_width
+        self.ctx.depth_mask = True
+        self.ctx.disable(moderngl.BLEND)
+
+    def _batch_guides(self, scene):
+        """Pack every guide into one vertex array and one index array.
+
+        Segments are indexed explicitly, as for orbits, so the polylines
+        never join end to end - which matters more here, where one overlay
+        is a ring, the next a two-point node line and the next an arrow.
+        """
+        vertex_blocks = []
+        index_blocks = []
+        offset = 0
+
+        for guide in scene.guides:
+            points = guide.points_local
+            count = points.shape[0]
+            if count < 2:
+                continue
+
+            segments = np.linalg.norm(np.diff(points, axis=0), axis=1)
+            arclength = np.concatenate([[0.0], np.cumsum(segments)])
+            total = float(arclength[-1]) or 1.0
+            dash = total * self.settings.guide_dash_period if guide.style.is_dashed else 0.0
+
+            block = np.empty((count, 9), dtype=np.float32)
+            block[:, 0:3] = points
+            block[:, 3] = arclength
+            block[:, 4:8] = guide.color
+            block[:, 8] = dash
+            vertex_blocks.append(block)
+
             starts = np.arange(count - 1, dtype=np.uint32) + offset
             index_blocks.append(np.stack([starts, starts + 1], axis=-1).ravel())
             offset += count

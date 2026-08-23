@@ -152,8 +152,21 @@ def test_the_gl_job_installs_the_render_extra(workflow):
 
 def test_the_gl_job_renders_every_demo(workflow):
     text = _run_text(workflow, "opengl")
-    for demo in ("slice_demo", "system_demo", "explorer_demo"):
+    for demo in ("slice_demo", "system_demo", "explorer_demo", "orientation_demo"):
         assert demo in text
+
+
+def test_the_gl_job_renders_the_orientation_provenance_cases(workflow):
+    """C2's claim is visual, so software Mesa has to draw it.
+
+    Measured, derived and assumed orientations must reach real pixels in
+    CI. The difference between them is a dash pattern, which is exactly the
+    kind of thing that can be correct in a scene description and lost on
+    the way to the GPU.
+    """
+    text = _run_text(workflow, "opengl")
+    assert "orientation_demo" in text
+    assert "test_explorer_c2.py" in text
 
 
 def test_the_gl_job_runs_the_explorer_tests(workflow):

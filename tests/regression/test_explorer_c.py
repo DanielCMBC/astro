@@ -272,7 +272,67 @@ def test_the_overlay_can_be_switched_off(hd80606):
         hd80606.frame, hd80606.star, hd80606.planets, draw_habitable_zone=False
     )
     assert scene.zones == []
-    assert not any("Habitable zone" in note for note in scene.annotations)
+    assert not any("Habitable-zone cross-section" in note for note in scene.annotations)
+
+
+def test_the_flat_band_is_disclosed_as_a_cross_section(hd80606):
+    """The drawn annulus is a section through a shell, and says so.
+
+    The physical habitable zone is a range of *radial* distances, so the
+    region is a spherical shell around the star. Drawing a flat band
+    without saying that invites reading the zone as a property of one
+    plane - as if a planet on a different plane were outside it.
+    """
+    scene = build_frame_scene(hd80606.frame, hd80606.star, hd80606.planets)
+    text = " ".join(scene.annotations)
+
+    assert "cross-section" in text
+    assert "reference plane" in text
+    assert "spherical shell" in text
+
+
+def test_the_zone_edge_colour_is_part_of_the_render_contract():
+    """``edge_color`` is documented as drawn, so the backend must draw it.
+
+    Checked here as well as through a real context, because the GL tests
+    skip on a machine with no driver and this contract should not go
+    unchecked there. The behavioural proof lives in
+    ``test_zone_edge_style_is_consumed_by_renderer``.
+    """
+    import inspect
+
+    from astro_explorer.rendering import gl_backend
+
+    source = inspect.getsource(gl_backend)
+    assert "edge_color" in _code_only(gl_backend)
+    assert "_batch_zone_edges" in source
+
+
+def test_kepler11_lies_entirely_starward_of_its_inner_boundary(catalog):
+    """The overlay's most useful reading, stated the way it must be worded.
+
+    All six Kepler-11 planets are *starward of* the 1.007 AU inner
+    boundary - outside the irradiation-defined habitable zone, on the hot
+    side. Saying instead that a planet is "inside the inner edge" invites
+    the reading "inside the habitable zone", which is the opposite of what
+    it means, so the phrasing is pinned here along with the geometry.
+    """
+    system = build_slice("Kepler-11", catalog)
+    zone = system.star.habitable_zone
+    inner = zone.inner.value_in(u.au)
+
+    assert inner == pytest.approx(1.007, rel=1e-3)
+    for record in system.planets:
+        apoapsis = record.elements.apoapsis.value_in(u.au)
+        assert apoapsis < inner, record.name
+
+    scene = build_frame_scene(system.frame, system.star, system.planets)
+    assert len(scene.zones) == 1
+    zone_radii = _radii(scene.zones[0].inner_points_local)
+    orbit_radii = [
+        float(np.linalg.norm(orbit.points_local, axis=1).max()) for orbit in scene.orbits
+    ]
+    assert max(orbit_radii) < zone_radii.min()
 
 
 # ==========================================================================

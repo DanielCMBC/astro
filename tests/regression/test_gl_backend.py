@@ -155,6 +155,109 @@ def test_a_dashed_orbit_draws_fewer_pixels_than_a_solid_one(renderer):
     assert 0 < dashed_pixels < solid_pixels
 
 
+def test_zone_edge_style_is_consumed_by_renderer(renderer):
+    """``edge_color`` is drawn, not merely declared.
+
+    The field promised boundary-ring styling that the GL path never read:
+    the fill was batched and drawn and the edges were not. A dead field
+    whose documentation says it is rendered is a contract the backend does
+    not honour, so this pins that it does.
+    """
+    from dataclasses import replace
+
+    from astro_explorer.rendering.renderer import RenderZone
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 96, endpoint=False)
+    unit = np.stack([np.cos(angle), np.sin(angle), np.zeros_like(angle)], axis=-1)
+    zone = RenderZone(
+        "hz",
+        unit * 1.0,
+        unit * 1.6,
+        color=(0.3, 0.8, 0.5, 0.12),
+        edge_color=(0.4, 1.0, 0.7, 0.95),
+    )
+    camera = Camera(target=np.zeros(3), distance=5.0, aspect=320 / 240, pitch=1.2)
+
+    drawn = renderer.render(SceneDescription(zones=[zone]), camera)
+    # Two batched draws for any number of zones: one fill, one edge pass.
+    assert renderer.last_zone_draw_calls == 2
+
+    invisible_edges = renderer.render(
+        SceneDescription(zones=[replace(zone, edge_color=(0.0, 0.0, 0.0, 0.0))]), camera
+    )
+    # A transparent edge colour changes the picture; if the field were
+    # ignored the two frames would be identical.
+    assert not np.array_equal(drawn, invisible_edges)
+    assert _lit_pixels(drawn) > _lit_pixels(invisible_edges)
+
+    # And the edges are geometry at the boundaries, not a recolouring of
+    # the fill: the batch holds both rings, in the edge colour.
+    vertices, indices = renderer._batch_zone_edges(SceneDescription(zones=[zone]))
+    assert vertices.shape == (2 * zone.vertex_count, 7)
+    assert np.allclose(vertices[:, 3:7], zone.edge_color)
+    # One closed loop per ring: N segments each, two endpoints per segment.
+    assert indices.size == 2 * 2 * zone.vertex_count
+
+
+def test_zone_draw_restores_gl_state(renderer):
+    """Blend, depth-mask and line width must not leak into later passes.
+
+    The zone pass turns blending on, depth writes off and the line width up.
+    Left set, they would quietly change how everything drawn afterwards
+    composites - which is the kind of defect that shows up as a rendering
+    oddity three features later.
+    """
+    from astro_explorer.rendering.renderer import RenderZone
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+    unit = np.stack([np.cos(angle), np.sin(angle), np.zeros_like(angle)], axis=-1)
+    zone_scene = SceneDescription(zones=[RenderZone("hz", unit, unit * 1.5)])
+    camera = Camera(target=np.zeros(3), distance=6.0, yaw=0.0, pitch=0.0, aspect=320 / 240)
+
+    renderer.ctx.line_width = 1.0
+    renderer.ctx.depth_mask = True
+    renderer.render(zone_scene, camera)
+
+    assert renderer.ctx.depth_mask is True
+    assert renderer.ctx.line_width == pytest.approx(1.0)
+
+    # And behaviourally: depth testing still hides an occluded body, which
+    # it would not if depth writes had been left disabled.
+    occluded = SceneDescription(
+        stars=[
+            RenderStar("near", [0, 0, 2.0], 0.8, (1, 1, 1)),
+            RenderStar("far", [0, 0, -2.0], 0.8, (1, 1, 1)),
+        ]
+    )
+    front_only = SceneDescription(stars=[RenderStar("near", [0, 0, 2.0], 0.8, (1, 1, 1))])
+    assert _lit_pixels(renderer.render(occluded, camera)) <= (
+        _lit_pixels(renderer.render(front_only, camera)) * 1.2
+    )
+
+
+def test_a_zone_is_drawn_beneath_the_orbits(renderer):
+    """The overlay must not paint over an orbit that crosses it."""
+    from astro_explorer.rendering.renderer import RenderZone
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 128, endpoint=False)
+    unit = np.stack([np.cos(angle), np.sin(angle), np.zeros_like(angle)], axis=-1)
+    path = np.stack([1.3 * np.cos(angle), 1.3 * np.sin(angle), np.zeros_like(angle)], axis=-1)
+    camera = Camera(target=np.zeros(3), distance=5.0, aspect=320 / 240, pitch=1.3)
+
+    orbit_only = renderer.render(
+        SceneDescription(orbits=[RenderOrbit("o", path, color=(1, 1, 1, 1.0))]), camera
+    )
+    with_zone = renderer.render(
+        SceneDescription(
+            zones=[RenderZone("hz", unit, unit * 1.6)],
+            orbits=[RenderOrbit("o", path, color=(1, 1, 1, 1.0))],
+        ),
+        camera,
+    )
+    # The orbit sits inside the band and must survive it.
+    assert _lit_pixels(with_zone) >= _lit_pixels(orbit_only)
+
+
 def test_many_planets_are_one_instanced_draw(renderer):
     """Instancing is what keeps a large system from costing N draw calls."""
     rng = np.random.default_rng(0)
@@ -170,6 +273,75 @@ def test_many_planets_are_one_instanced_draw(renderer):
 
     camera = Camera(target=np.zeros(3), distance=8.0, aspect=320 / 240)
     assert _lit_pixels(renderer.render(scene, camera)) > 200
+
+
+def test_orientation_guides_are_drawn_in_one_batched_call(renderer):
+    """Explorer C2: six guides, one draw call, and pixels on screen."""
+    from astro_explorer.rendering.renderer import GuideStyle, RenderGuide
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 128)
+    ring = np.stack([np.cos(angle), np.sin(angle), np.zeros_like(angle)], axis=-1)
+    tilted = np.stack(
+        [np.cos(angle), 0.7 * np.sin(angle), 0.7 * np.sin(angle)], axis=-1
+    )
+    scene = SceneDescription(
+        guides=[
+            RenderGuide("g:reference-plane", ring, color=(0.6, 0.6, 0.8, 1.0)),
+            RenderGuide("g:orbit-plane", tilted, GuideStyle.DASHED),
+            RenderGuide("g:node", [[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            RenderGuide("g:normal", [[0.0, 0.0, 0.0], [0.0, 0.0, 0.9]]),
+        ]
+    )
+    camera = Camera(target=np.zeros(3), distance=3.5, aspect=320 / 240, pitch=1.0)
+    image = renderer.render(scene, camera)
+
+    assert renderer.last_guide_draw_calls == 1
+    assert _lit_pixels(image) > 100
+
+
+def test_a_dashed_guide_is_visibly_different_from_a_solid_one(renderer):
+    """The dash is how an assumed orientation is disclosed in the picture.
+
+    If it did not survive the trip to the GPU, a normalised node line would
+    look exactly like a measured one - which is the whole failure C2 exists
+    to prevent.
+    """
+    from astro_explorer.rendering.renderer import GuideStyle, RenderGuide
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 512)
+    ring = np.stack([np.cos(angle), np.sin(angle), np.zeros_like(angle)], axis=-1)
+    camera = Camera(target=np.zeros(3), distance=3.0, aspect=320 / 240, pitch=1.4)
+
+    solid = SceneDescription(
+        guides=[RenderGuide("g", ring, GuideStyle.SOLID, color=(1, 1, 1, 1.0))]
+    )
+    dashed = SceneDescription(
+        guides=[RenderGuide("g", ring, GuideStyle.DASHED, color=(1, 1, 1, 1.0))]
+    )
+    solid_pixels = _lit_pixels(renderer.render(solid, camera))
+    dashed_pixels = _lit_pixels(renderer.render(dashed, camera))
+    assert 0 < dashed_pixels < solid_pixels
+
+
+def test_guides_do_not_disturb_the_rest_of_the_frame(renderer):
+    """The overlay is drawn last and restores what it changed."""
+    from astro_explorer.rendering.renderer import RenderGuide
+
+    camera = Camera(target=np.zeros(3), distance=6.0, yaw=0.0, pitch=0.0, aspect=320 / 240)
+    bodies = SceneDescription(
+        stars=[RenderStar("S", [0, 0, 0], 0.8, (1.0, 0.9, 0.8))]
+    )
+    before = renderer.render(bodies, camera)
+
+    renderer.render(
+        SceneDescription(
+            stars=list(bodies.stars),
+            guides=[RenderGuide("g", [[-3.0, 0.0, 0.0], [3.0, 0.0, 0.0]])],
+        ),
+        camera,
+    )
+    after = renderer.render(bodies, camera)
+    assert np.array_equal(before, after)
 
 
 def test_depth_testing_hides_the_far_body(renderer):

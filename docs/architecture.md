@@ -48,8 +48,17 @@ These rules are enforced by tests in `tests/regression/test_architecture.py`:
 ## The renderer's input contract
 
 `rendering/renderer.py` defines the only types a GL backend accepts:
-`RenderStar`, `RenderPlanet`, `RenderOrbit`, `SceneDescription`. They carry
-positions in display units, a radius, a material id and a colour.
+`RenderStar`, `RenderPlanet`, `RenderOrbit`, `RenderZone`, `RenderGuide`,
+`SceneDescription`. They carry positions in display units, a radius, a
+material id, a colour and - for a guide - a stroke style.
+
+The two overlay primitives are where the rule earns its keep. `RenderZone`
+is two rings and two colours, with no luminosity or temperature to
+recompute a habitable-zone boundary from. `RenderGuide` is a polyline with
+a `SOLID` or `DASHED` stroke, with no inclination, `omega` or `Omega` to
+re-derive an orientation from - which would be a second reading of the
+catalogue's conventions, free to disagree silently with the orbit it is
+drawn against.
 
 They deliberately have **no** field for eccentricity, semimajor axis,
 anomaly, physical distance, parameter status or molecular detection. The
