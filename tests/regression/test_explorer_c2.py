@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 
 from astro_explorer.physics.orbital_elements import OrbitalElements
+from astro_explorer.physics.node_semantics import resolve_node_azimuth
 from astro_explorer.physics.orbital_semantics import OrbitValidity, PeriastronConvention
 from astro_explorer.physics.orientation import (
     position_from_eccentric_anomaly,
@@ -122,8 +123,20 @@ def test_a_coplanar_orbit_plane_matches_the_reference_plane(frame):
 
     reference = _points(_named(overlay, "reference-plane"))
     plane = _points(_named(overlay, "orbit-plane"))
-    assert np.allclose(plane, reference, atol=1e-5)
+
+    # The same circle, not the same list: the node conversion starts the
+    # sampling at a different azimuth, so compare the geometry rather than
+    # the point ordering.
     assert np.allclose(plane[:, 2], 0.0, atol=1e-5)
+    assert np.ptp(np.linalg.norm(plane, axis=1)) == pytest.approx(0.0, abs=1e-5)
+    assert np.linalg.norm(plane, axis=1).mean() == pytest.approx(
+        np.linalg.norm(reference, axis=1).mean(), rel=1e-5
+    )
+    # Every reference point lies on the orbital-plane ring and vice versa:
+    # the two are the same circle, traced from a different start angle.
+    gaps = np.linalg.norm(reference[:, None, :] - plane[None, :, :], axis=-1)
+    assert gaps.min(axis=1).max() < 1e-4
+    assert gaps.min(axis=0).max() < 1e-4
 
     # And there is no arc to draw between two coincident planes.
     assert overlay.guide("inclination") is None
@@ -137,22 +150,33 @@ def test_a_polar_orbit_normal_lies_in_the_reference_plane(frame):
     normal = _points(_named(overlay, "orbit-normal"))
     tip = normal[1]  # shaft runs origin -> tip
     assert np.isclose(tip[2], 0.0, atol=1e-5)
-    # Omega = 0 puts the node on +x, so the normal points along -y.
+    # Omega_PA = 0 is North, which is internal +y, so the normal is along +x
+    # (East). Before C3.5.1 the raw zero was read as an internal azimuth and
+    # put the node on +x, which is East - the annotation said North.
     direction = tip / np.linalg.norm(tip)
-    assert np.allclose(direction, [0.0, -1.0, 0.0], atol=1e-5)
+    assert np.allclose(direction, [1.0, 0.0, 0.0], atol=1e-5)
 
 
 def test_the_node_line_rotates_with_the_ascending_node(frame):
-    """Omega = 90 turns the line of nodes a quarter turn."""
+    """Omega_PA = 0 is North; 90 is East.
+
+    A catalogued node is a position angle - from North, increasing toward
+    East - while the internal frame runs from ``+x`` = East toward ``+y`` =
+    North. So the published quarter turn shows up as a quarter turn the
+    other way internally, and the guide must land on the *sky* direction the
+    catalogue named.
+    """
     at_zero = orientation_guides(_elements(inclination_deg=45.0, node_deg=0.0), frame)
     at_ninety = orientation_guides(_elements(inclination_deg=45.0, node_deg=90.0), frame)
 
     ascending_zero = _points(_named(at_zero, "ascending-node"))[1]
     ascending_ninety = _points(_named(at_ninety, "ascending-node"))[1]
 
-    assert np.allclose(ascending_zero / np.linalg.norm(ascending_zero), [1, 0, 0], atol=1e-5)
+    # PA 0 -> North -> internal +y.
+    assert np.allclose(ascending_zero / np.linalg.norm(ascending_zero), [0, 1, 0], atol=1e-5)
+    # PA 90 -> East -> internal +x.
     assert np.allclose(
-        ascending_ninety / np.linalg.norm(ascending_ninety), [0, 1, 0], atol=1e-5
+        ascending_ninety / np.linalg.norm(ascending_ninety), [1, 0, 0], atol=1e-5
     )
     # The nodes are in the reference plane whatever the inclination.
     assert np.allclose(_points(_named(at_ninety, "ascending-node"))[:, 2], 0.0, atol=1e-5)
@@ -170,8 +194,15 @@ def test_the_periapsis_arrow_rotates_with_the_argument_of_periastron(frame):
     tip_zero = _points(_named(at_zero, "periapsis"))[1]
     tip_ninety = _points(_named(at_ninety, "periapsis"))[1]
 
-    assert np.allclose(tip_zero / np.linalg.norm(tip_zero), [1, 0, 0], atol=1e-5)
-    assert np.allclose(tip_ninety / np.linalg.norm(tip_ninety), [0, 1, 0], atol=1e-5)
+    # With Omega_PA = 0 the node is North (internal +y), and omega is
+    # measured from the node within the orbital plane, so periapsis starts
+    # there and a quarter turn carries it to internal -x.
+    assert np.allclose(tip_zero / np.linalg.norm(tip_zero), [0, 1, 0], atol=1e-5)
+    assert np.allclose(tip_ninety / np.linalg.norm(tip_ninety), [-1, 0, 0], atol=1e-5)
+    # Whatever the axes, the two are a quarter turn apart.
+    assert np.dot(
+        tip_zero / np.linalg.norm(tip_zero), tip_ninety / np.linalg.norm(tip_ninety)
+    ) == pytest.approx(0.0, abs=1e-5)
 
 
 def test_the_guides_use_the_production_orbital_transform(frame):
@@ -183,12 +214,18 @@ def test_the_guides_use_the_production_orbital_transform(frame):
     would disagree silently, because both would be smooth curves in roughly
     the right place.
     """
-    i, omega, node = np.radians([37.0, 64.0, 118.0])
+    i, omega = np.radians([37.0, 64.0])
     elements = _elements(
         inclination_deg=37.0, omega_deg=64.0, node_deg=118.0, eccentricity=0.6
     )
     overlay = orientation_guides(elements, frame)
-    rotation = rotation_perifocal_to_inertial(i, omega, node)
+    # Built through the production node route rather than from the raw
+    # catalogue angle. Before C3.5.1 the guides converted the position angle
+    # and this expectation did not, so the two silently disagreed by the
+    # very ninety degrees the conversion exists to apply.
+    rotation = rotation_perifocal_to_inertial(
+        i, omega, resolve_node_azimuth(elements.longitude_of_ascending_node)
+    )
 
     # The orbital plane is the perifocal z = 0 plane carried through R.
     plane = _points(_named(overlay, "orbit-plane"))
@@ -224,7 +261,10 @@ def test_the_periapsis_arrow_ends_at_the_actual_periapsis(frame):
         0.0,
         inclination=np.radians(37.0),
         argument_of_periapsis=np.radians(64.0),
-        longitude_of_ascending_node=np.radians(118.0),
+        # The production node route, not the raw catalogue angle.
+        longitude_of_ascending_node=resolve_node_azimuth(
+            elements.longitude_of_ascending_node
+        ),
     )
     assert np.allclose(tip, expected, rtol=1e-5, atol=1e-6)
     assert np.linalg.norm(tip) == pytest.approx(1.4 * (1.0 - 0.6), rel=1e-5)
@@ -329,7 +369,9 @@ def test_a_stellar_reflex_conversion_stays_derived_and_draws_solid(frame):
     # And it points at the converted direction, not the catalogued one.
     tip = _points(arrow)[1]
     expected = rotation_perifocal_to_inertial(
-        np.radians(45.0), np.radians(210.0), np.radians(10.0)
+        np.radians(45.0),
+        np.radians(210.0),
+        resolve_node_azimuth(elements.longitude_of_ascending_node),
     ) @ np.array([1.0, 0.0, 0.0])
     assert np.allclose(tip / np.linalg.norm(tip), expected, atol=1e-5)
     assert any("derived" in note for note in overlay.annotations)
@@ -638,3 +680,170 @@ def test_a_measured_node_is_still_annotated_measured(frame):
         note for note in overlay.annotations if note.startswith("Ascending node:")
     )
     assert "(measured)" in node_note
+
+
+# ==========================================================================
+# C3.5.1: the conversion is on the production path, not beside it
+# ==========================================================================
+
+_PA_TO_SKY = [
+    (0.0, "north"),
+    (90.0, "east"),
+    (180.0, "south"),
+    (270.0, "west"),
+]
+
+
+def _sky_directions():
+    """Internal-frame unit vectors for the four cardinal sky directions.
+
+    The canonical frame is ``+x`` = East, ``+y`` = North, so North is +y and
+    East is +x. Writing them out here rather than reusing the conversion
+    means the expectation is independent of the code under test.
+    """
+    return {
+        "east": np.array([1.0, 0.0, 0.0]),
+        "north": np.array([0.0, 1.0, 0.0]),
+        "west": np.array([-1.0, 0.0, 0.0]),
+        "south": np.array([0.0, -1.0, 0.0]),
+    }
+
+
+@pytest.mark.parametrize("pa_deg,expected", _PA_TO_SKY)
+def test_a_raw_position_angle_propagates_to_the_named_sky_direction(pa_deg, expected):
+    """The end-to-end check the C3.5 audit asked for.
+
+    A catalogued node is a position angle: 0 is North, 90 is East. Before
+    C3.5.1 that number went straight into ``R_z``, whose ``+x`` is East - so
+    a published node of 0 was drawn East while every annotation said North.
+
+    This drives the *production* propagator, not the conversion function, so
+    it fails if any route stops applying the conversion.
+    """
+    from astro_explorer.physics.orbital_elements import position_at_eccentric_anomaly
+
+    elements = _elements(
+        inclination_deg=0.0, omega_deg=0.0, node_deg=pa_deg, eccentricity=0.0
+    )
+    # i = 0 and omega = 0 puts periapsis on the line of nodes itself, so the
+    # propagated position at E = 0 *is* the node direction.
+    node_direction = position_at_eccentric_anomaly(elements.for_display(), 0.0)
+    unit = node_direction / np.linalg.norm(node_direction)
+
+    assert np.allclose(unit, _sky_directions()[expected], atol=1e-9), (pa_deg, unit)
+
+
+@pytest.mark.parametrize("pa_deg,expected", _PA_TO_SKY)
+def test_the_orientation_guide_node_matches_the_named_sky_direction(pa_deg, expected):
+    """The C2 guide must land on the same sky direction as the orbit."""
+    elements = _elements(inclination_deg=30.0, omega_deg=0.0, node_deg=pa_deg)
+    overlay = orientation_guides(elements, SystemFrame.for_host("test host"))
+
+    node_tip = _points(_named(overlay, "ascending-node"))[1]
+    unit = node_tip / np.linalg.norm(node_tip)
+
+    assert np.allclose(unit, _sky_directions()[expected], atol=1e-5), (pa_deg, unit)
+
+
+def test_the_guide_node_agrees_with_the_propagated_orbit():
+    """Guide and orbit are built from one azimuth, so they cannot diverge."""
+    from astro_explorer.physics.orbital_elements import position_at_eccentric_anomaly
+
+    for pa_deg in (0.0, 37.0, 118.0, 264.0):
+        elements = _elements(
+            inclination_deg=52.0, omega_deg=0.0, node_deg=pa_deg, eccentricity=0.0
+        )
+        overlay = orientation_guides(elements, SystemFrame.for_host("test host"))
+
+        guide = _points(_named(overlay, "ascending-node"))[1]
+        orbit = position_at_eccentric_anomaly(elements.for_display(), 0.0)
+
+        assert np.allclose(
+            guide / np.linalg.norm(guide), orbit / np.linalg.norm(orbit), atol=1e-5
+        ), pa_deg
+
+
+def test_the_slice_state_uses_the_canonicalised_node(catalog):
+    """The third production route - the propagated state - converts too.
+
+    ``SystemSlice.state`` builds its own call into the propagator rather
+    than going through ``_display_angles``, so it is a separate place the
+    conversion could have been missed.
+    """
+    from astro_explorer.physics.node_semantics import resolve_node_azimuth
+    from astro_explorer.physics.state_vectors import state_at_mean_anomaly
+
+    system = build_slice("HD 80606", catalog)
+    record = system.planet("HD 80606 b")
+    display = record.elements.for_display()
+    anomaly = system.phase(record, 2460000.0).mean_anomaly
+
+    expected = state_at_mean_anomaly(
+        display.semimajor_axis.value_in(u.au),
+        display.eccentricity.value_in(u.dimensionless_unscaled, 0.0),
+        anomaly,
+        inclination=display.inclination.value_in(u.rad, 0.0),
+        argument_of_periapsis=display.argument_of_periastron.value_in(u.rad, 0.0),
+        longitude_of_ascending_node=resolve_node_azimuth(
+            display.longitude_of_ascending_node
+        ),
+        mu=system.mu,
+    )
+    assert np.allclose(
+        system.state(record, 2460000.0).position, expected.position, rtol=0, atol=0
+    )
+
+
+def test_a_normalised_node_is_displayed_north():
+    """``Omega_PA = 0`` means North, and must be *drawn* North.
+
+    This is the case that would have been silently wrong for every planet in
+    the catalogue, since almost none publish a node and all of them are
+    normalised to zero. The text said North; the geometry said East.
+    """
+    from astro_explorer.physics.node_semantics import resolve_node_azimuth
+
+    unpublished = _elements(inclination_deg=40.0, omega_deg=0.0, node_deg=None)
+    display = unpublished.for_display()
+    node = display.longitude_of_ascending_node
+
+    # The display normalisation really is a zero position angle ...
+    assert node.value_in(u.deg) == pytest.approx(0.0)
+    assert node.status is Status.ASSUMED_FOR_VISUALIZATION
+    # ... and that zero means North, which is a quarter turn internally.
+    assert resolve_node_azimuth(node) == pytest.approx(np.pi / 2.0)
+
+    overlay = orientation_guides(
+        unpublished, SystemFrame.for_host("test host"), show_normalised=True
+    )
+    tip = _points(_named(overlay, "ascending-node"))[1]
+    assert np.allclose(tip / np.linalg.norm(tip), [0.0, 1.0, 0.0], atol=1e-5)
+
+
+def test_no_production_module_passes_a_raw_node_into_the_rotation():
+    """Structural guard: the conversion cannot be bypassed by a new caller.
+
+    The bug this slice fixes was not a wrong formula - the formula existed
+    and was tested. It was that three production call sites did not use it.
+    So this scans production source for a node angle being read straight out
+    of a parameter, which is the shape that mistake takes.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "src" / "astro_explorer"
+    offenders = []
+    pattern = re.compile(r"longitude_of_ascending_node\s*\.\s*value_in")
+
+    for path in root.rglob("*.py"):
+        if path.name == "node_semantics.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), 1):
+            if pattern.search(line):
+                offenders.append("{0}:{1}".format(path.name, number))
+
+    assert not offenders, (
+        "a raw node angle is being read for the transform; it must go "
+        "through resolve_node_azimuth: {0}".format(offenders)
+    )

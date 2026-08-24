@@ -41,6 +41,7 @@ from ..coordinates.system_frame import SystemFrame
 from ..data.nasa_archive import SolutionPolicy
 from ..data.schema import PlanetRecord, StarRecord, build_planet_record
 from ..physics.ephemeris import JD_UNIX_EPOCH
+from ..physics.node_semantics import resolve_node_azimuth
 from ..physics.orbital_elements import PhaseKnowledge
 from ..physics.phase import PhaseSolution, PhaseStatus
 from ..physics.state_vectors import (
@@ -202,7 +203,10 @@ class SystemSlice:
             anomaly,
             inclination=display.inclination.value_in(u.rad, 0.0),
             argument_of_periapsis=display.argument_of_periastron.value_in(u.rad, 0.0),
-            longitude_of_ascending_node=display.longitude_of_ascending_node.value_in(u.rad, 0.0),
+            # Position angle -> internal azimuth; never the raw catalogue value.
+            longitude_of_ascending_node=resolve_node_azimuth(
+                display.longitude_of_ascending_node
+            ),
             mu=self.mu,
         )
 

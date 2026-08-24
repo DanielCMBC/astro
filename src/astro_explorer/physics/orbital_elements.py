@@ -26,6 +26,7 @@ from enum import Enum
 import astropy.units as u
 import numpy as np
 
+from .node_semantics import resolve_node_azimuth
 from ..provenance import Parameter, Status, assumed, derived, unknown
 from .epoch import Epoch, EpochKind, MeanAnomalyAnchor, TimeScale
 from .kepler import solve_kepler, true_anomaly_from_eccentric
@@ -552,11 +553,23 @@ def _display_angles(elements: "OrbitalElements") -> dict[str, float]:
     :meth:`OrbitalElements.for_display` so that any substitution is already
     recorded as ASSUMED_FOR_VISUALIZATION.  The zero defaults here are the
     last line of that policy, not a shortcut around it.
+
+    The node is the exception, and the reason is not a detail. A catalogued
+    longitude of the ascending node is a *position angle* - from North,
+    increasing toward East - while the transform wants an azimuth from the
+    internal ``+X`` axis, which is East. Passing the published number
+    straight through would put every orbit ninety degrees out and running
+    backwards, and the normalised ``Omega_PA = 0`` (meaning North) would be
+    drawn East while the annotation beside it said North. So the node
+    reaches the rotation only through
+    :func:`~astro_explorer.physics.node_semantics.resolve_node_azimuth`.
     """
     return {
         "inclination": elements.inclination.value_in(u.rad, 0.0),
         "argument_of_periapsis": elements.argument_of_periastron.value_in(u.rad, 0.0),
-        "longitude_of_ascending_node": elements.longitude_of_ascending_node.value_in(u.rad, 0.0),
+        "longitude_of_ascending_node": resolve_node_azimuth(
+            elements.longitude_of_ascending_node
+        ),
     }
 
 

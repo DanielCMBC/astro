@@ -53,6 +53,7 @@ from astro_explorer.coordinates.tangent import (
     SKY_BASIS_CONVENTION,
     NodeConvention,
     NodeSense,
+    NodeSenseEvidence,
     absolute_position_blockers,
     azimuth_to_position_angle,
     is_pole_degenerate,
@@ -335,7 +336,7 @@ def _tagged(node, *, convention=None, sense=None, evidence=None):
     if sense is not None:
         extra["node_sense"] = sense.value
     if evidence is not None:
-        extra["node_sense_evidence"] = evidence
+        extra["node_sense_evidence"] = evidence.value
     return replace(node, extra=extra)
 
 
@@ -345,7 +346,7 @@ def _resolved_node(value_rad=0.7):
         measured(value_rad, u.rad, provenance="test: RV-resolved"),
         convention=NodeConvention.PA_EAST_OF_NORTH_RECEDING,
         sense=NodeSense.RESOLVED,
-        evidence="test: radial-velocity orbit identifies the receding node",
+        evidence=NodeSenseEvidence.ORBITAL_RV_SOLUTION,
     )
 
 
@@ -828,13 +829,15 @@ def test_a_resolved_tag_without_named_evidence_does_not_count():
     )
     assert node_sense_of(unevidenced) is NodeSense.MODULO_180
 
-    blank = _tagged(
+    systemic = _tagged(
         measured(0.7, u.rad, provenance="test"),
         convention=NodeConvention.PA_EAST_OF_NORTH_RECEDING,
         sense=NodeSense.RESOLVED,
-        evidence="   ",
+        evidence=NodeSenseEvidence.SYSTEMIC_RADIAL_VELOCITY,
     )
-    assert node_sense_of(blank) is NodeSense.MODULO_180
+    # The one kind that is named precisely so it can be refused.
+    assert not NodeSenseEvidence.SYSTEMIC_RADIAL_VELOCITY.resolves_node
+    assert node_sense_of(systemic) is NodeSense.MODULO_180
 
     reasons = absolute_position_blockers(_probe(), unevidenced, epoch_resolved=True)
     assert NODE_SENSE_UNRESOLVED in reasons

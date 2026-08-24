@@ -92,12 +92,22 @@ So this slice ships the transform and keeps the absolute position withheld.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
-
 import astropy.units as u
 import numpy as np
 
-from ..provenance import Parameter, Status
+from ..physics.node_semantics import (
+    NodeConvention,
+    NodeSense,
+    NodeSenseEvidence,
+    azimuth_to_position_angle,
+    node_convention_of,
+    node_is_constrained,
+    node_sense_evidence_of,
+    node_sense_of,
+    position_angle_to_azimuth,
+    resolve_node_azimuth,
+)
+from ..provenance import Parameter
 from .frames import SkyPosition
 
 __all__ = [
@@ -106,6 +116,7 @@ __all__ = [
     "POLE_TOLERANCE_DEG",
     "NodeConvention",
     "NodeSense",
+    "NodeSenseEvidence",
     "TangentBasis",
     "tangent_basis",
     "position_angle_to_azimuth",
@@ -115,6 +126,8 @@ __all__ = [
     "is_pole_degenerate",
     "node_convention_of",
     "node_sense_of",
+    "node_sense_evidence_of",
+    "resolve_node_azimuth",
     "absolute_position_blockers",
     "EPOCH_NOT_MODELLED",
     "NODE_CONVENTION_UNSTATED",
@@ -140,69 +153,6 @@ SKY_BASIS_CONVENTION = (
 #: Within this many degrees of a celestial pole, right ascension is not a
 #: unique physical direction, so the East/North azimuth is gauge-dependent.
 POLE_TOLERANCE_DEG = 1e-6
-
-
-class NodeConvention(str, Enum):
-    """How a catalogued longitude of ascending node was defined.
-
-    ``UNSPECIFIED`` is the default and is never treated as a guess at the
-    standard: an angle whose convention was not recorded is a number, not a
-    direction, and must not unlock an absolute position.
-    """
-
-    PA_EAST_OF_NORTH_RECEDING = "PA_EAST_OF_NORTH_RECEDING"
-    """Position angle from North toward East; ascending = receding."""
-
-    UNSPECIFIED = "UNSPECIFIED"
-    """Not recorded. Blocks publication rather than defaulting."""
-
-    @property
-    def is_stated(self) -> bool:
-        return self is not NodeConvention.UNSPECIFIED
-
-
-class NodeSense(str, Enum):
-    """Whether the ascending/descending sense of the node is resolved.
-
-    A measured *number* is not a resolved node. Relative astrometry
-    routinely determines the node only modulo 180 degrees, because
-    ``(omega, Omega)`` and ``(omega + pi, Omega - pi)`` produce the same
-    projected orbit on the sky. Distinguishing them needs radial-velocity or
-    equivalent line-of-sight information.
-
-    ``RESOLVED`` means evidence identified *this orbit's* receding node - a
-    radial-velocity orbit, an eclipse timing that fixes which node recedes,
-    or an equivalent observation. A generic **systemic** stellar radial
-    velocity is **not** enough by itself: it describes the whole system's
-    motion relative to the Sun and says nothing about which of the two nodes
-    of a planet's orbit recedes. Because that distinction is invisible in
-    the number, :func:`node_sense_of` requires the evidence to be named.
-    """
-
-    RESOLVED = "RESOLVED"
-    """The receding node is identified; the 3D orientation is unique.
-
-    Only for evidence that identifies *this orbit's* ascending node -
-    orbit-specific line-of-sight information such as a radial-velocity
-    orbit, a transit/eclipse timing that fixes which node recedes, or an
-    equivalent observation.
-
-    A generic systemic stellar radial velocity is **not** enough by itself.
-    It describes the motion of the whole system relative to the Sun and says
-    nothing about which of the two nodes of a planet's orbit is the receding
-    one. Because that distinction is invisible in the number itself, the
-    evidence has to be named: see :func:`node_sense_of`.
-    """
-
-    MODULO_180 = "MODULO_180"
-    """The projected orbit is known; which node is ascending is not."""
-
-    UNKNOWN = "UNKNOWN"
-    """No information about the sense at all."""
-
-    @property
-    def is_resolved(self) -> bool:
-        return self is NodeSense.RESOLVED
 
 
 #: Reasons an absolute position cannot be published. Each is a separate
@@ -269,23 +219,6 @@ def tangent_basis(ra_deg: float, dec_deg: float) -> TangentBasis:
     )
 
 
-def position_angle_to_azimuth(position_angle_rad: float) -> float:
-    """Catalogue position angle -> internal azimuth: ``theta = pi/2 - PA``.
-
-    The single place this conversion is permitted. A position angle runs
-    from North toward East; the internal azimuth runs from ``+X`` (East)
-    toward ``+Y`` (North). They increase in opposite senses from different
-    axes, which is precisely why feeding a catalogue angle straight into a
-    rotation matrix is wrong.
-    """
-    return float(np.pi / 2.0 - float(position_angle_rad))
-
-
-def azimuth_to_position_angle(azimuth_rad: float) -> float:
-    """Inverse of :func:`position_angle_to_azimuth`; it is its own inverse."""
-    return float(np.pi / 2.0 - float(azimuth_rad))
-
-
 def is_pole_degenerate(dec_deg: float | None) -> bool:
     """True at a celestial pole, where sky-plane azimuth has no unique meaning.
 
@@ -332,49 +265,6 @@ def system_offset_to_icrs_pc(host: SkyPosition | None, offset_au) -> np.ndarray 
     return rotation @ (offset * float((1.0 * u.au).to_value(u.pc)))
 
 
-def node_convention_of(node: Parameter | None) -> NodeConvention:
-    """The recorded convention for a node parameter, or UNSPECIFIED.
-
-    Read from ``Parameter.extra`` so an ingestion path can tag it without
-    every consumer having to know. Absence is never treated as the standard:
-    silence must not unlock anything.
-    """
-    if node is None:
-        return NodeConvention.UNSPECIFIED
-    recorded = node.extra.get("node_convention")
-    try:
-        return NodeConvention(recorded)
-    except ValueError:
-        return NodeConvention.UNSPECIFIED
-
-
-def node_sense_of(node: Parameter | None) -> NodeSense:
-    """The recorded ascending/descending sense, or UNKNOWN.
-
-    A node with a value but no recorded sense is ``MODULO_180``, not
-    ``RESOLVED``: having a number is the normal situation in which the
-    ambiguity exists.
-
-    ``RESOLVED`` additionally requires ``node_sense_evidence`` to name what
-    actually broke the tie. That is not bureaucracy: the claim being made is
-    that some observation identified *this orbit's* receding node, and a
-    generic systemic radial velocity - the thing most likely to be reached
-    for - cannot do that. An unevidenced ``RESOLVED`` tag therefore falls
-    back to ``MODULO_180`` rather than unlocking publication.
-    """
-    if node is None or not node.is_known:
-        return NodeSense.UNKNOWN
-    try:
-        recorded = NodeSense(node.extra.get("node_sense"))
-    except ValueError:
-        return NodeSense.MODULO_180
-    if recorded is NodeSense.RESOLVED:
-        evidence = node.extra.get("node_sense_evidence")
-        if not isinstance(evidence, str) or not evidence.strip():
-            return NodeSense.MODULO_180
-    return recorded
-
-
 def absolute_position_blockers(
     host: SkyPosition | None,
     node: Parameter | None,
@@ -390,10 +280,7 @@ def absolute_position_blockers(
     """
     reasons: list[str] = []
 
-    if node is None or not node.is_known or node.status not in (
-        Status.MEASURED,
-        Status.DERIVED,
-    ):
+    if not node_is_constrained(node):
         reasons.append(NODE_SENSE_UNRESOLVED)
     else:
         if not node_convention_of(node).is_stated:

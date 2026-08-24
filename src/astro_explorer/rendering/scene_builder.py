@@ -22,6 +22,7 @@ from ..assets.procedural import planet_material, star_display_color
 from ..coordinates.floating_origin import Scale, SceneGraph
 from ..coordinates.system_frame import SystemFrame
 from ..physics.orbital_elements import position_at_mean_anomaly
+from ..physics.node_semantics import resolve_node_azimuth
 from ..physics.orientation import (
     inclination_arc,
     node_line,
@@ -426,7 +427,10 @@ def orientation_guides(
     periastron = display.argument_of_periastron
 
     i_rad = inclination.value_in(u.rad, 0.0)
-    node_rad = node.value_in(u.rad, 0.0)
+    # The guides must be built from the same azimuth the propagator uses,
+    # or the line of nodes would be drawn ninety degrees from the orbit it
+    # annotates. Published position angles stay in the text.
+    node_rad = resolve_node_azimuth(node)
     omega_rad = periastron.value_in(u.rad, 0.0)
 
     i_known = elements.inclination.is_known

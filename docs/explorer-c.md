@@ -475,6 +475,41 @@ Keeping the **source** convention separate from the **internal Cartesian**
 convention — rather than feeding a catalogue angle straight into a rotation
 matrix — is the entire point of the module.
 
+### C3.5.1 — putting it on the production path
+
+C3.5 shipped that conversion **correctly implemented and tested, and not
+actually used**. Three production routes still read the raw catalogued
+angle:
+
+```
+_display_angles()            -> position_at_* / state_at_*
+SystemSlice.state()          -> the propagated vertical slice
+orientation_guides()         -> the C2 overlay geometry
+```
+
+So a published node would have been interpreted as an internal azimuth —
+drawn ninety degrees out and running backwards.
+
+Worse, this was wrong for **every planet in the catalogue**, not just the
+rare ones with a published node. Almost none have one, so the display
+normalises `Ω_PA = 0` — which means *North* — and the unconverted zero drew
+the line of nodes **East** while the annotation beside it said North.
+
+The semantics now live in `physics/node_semantics.py`, reachable by all
+three, and `resolve_node_azimuth()` is the only supported way a node angle
+reaches the rotation. `test_a_raw_position_angle_propagates_to_the_named_sky_direction`
+drives the production propagator for PA 0/90/180/270 and asserts
+North/East/South/West, so any route that stops converting fails immediately.
+A structural guard also scans production source for a raw node read.
+
+### Evidence became typed
+
+`NodeSenseEvidence` replaces the earlier non-empty-string check, which would
+have accepted the literal text `"systemic radial velocity"` — the one thing
+that specifically cannot resolve a node. `SYSTEMIC_RADIAL_VELOCITY` is now a
+named member whose `resolves_node` is `False`, so the insufficient case is
+rejected rather than merely documented.
+
 ## A valid rotation does not license publishing
 
 Having `R` is necessary and nowhere near sufficient. Four further gates
