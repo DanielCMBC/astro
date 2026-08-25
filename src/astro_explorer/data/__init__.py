@@ -17,6 +17,14 @@ from .identity import (
     planet_id,
     star_id,
 )
+from .gaia import (
+    GAIA_DR3_RELEASE,
+    GaiaAstrometryCache,
+    GaiaAstrometryRecord,
+    GaiaHostIndex,
+    astrometric_state_from_gaia,
+    parse_gaia_dr3_id,
+)
 from .repository import CatalogRepository, SnapshotInfo
 from .schema import PlanetRecord, StarRecord, build_planet_record, parse_float
 from .synchronizer import (
@@ -36,6 +44,12 @@ __all__ = [
     "planet_id",
     "star_id",
     "CORE_COLUMNS",
+    "GAIA_DR3_RELEASE",
+    "GaiaAstrometryCache",
+    "GaiaAstrometryRecord",
+    "GaiaHostIndex",
+    "astrometric_state_from_gaia",
+    "parse_gaia_dr3_id",
     "TAP_SYNC_URL",
     "CatalogQuery",
     "CatalogRepository",

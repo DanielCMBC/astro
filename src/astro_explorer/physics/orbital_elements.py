@@ -26,7 +26,7 @@ from enum import Enum
 import astropy.units as u
 import numpy as np
 
-from .node_semantics import resolve_node_azimuth
+from .node_semantics import resolve_node_azimuth, resolve_node_azimuth_detailed
 from ..provenance import Parameter, Status, assumed, derived, unknown
 from .epoch import Epoch, EpochKind, MeanAnomalyAnchor, TimeScale
 from .kepler import solve_kepler, true_anomaly_from_eccentric
@@ -365,6 +365,25 @@ class OrbitalElements:
                 u.rad,
                 provenance="display-normalisation",
                 note="ascending node not observable; normalised to 0 deg",
+            )
+        elif not resolve_node_azimuth_detailed(
+            self.longitude_of_ascending_node
+        ).used_catalogue_value:
+            # C3.6 hardening. The node has a published value, but its
+            # convention was never recorded, so the number does not name a
+            # direction on the sky and the propagator will not use it.
+            # Leaving the element MEASURED here would let the overlay draw a
+            # normalised line of nodes solid and label it measured - the
+            # guide and the caption disagreeing about the same angle.
+            updates["longitude_of_ascending_node"] = assumed(
+                0.0,
+                u.rad,
+                provenance="display-normalisation",
+                note=(
+                    "a node value is published but its convention was not "
+                    "recorded, so it is not a position angle; normalised to "
+                    "0 deg"
+                ),
             )
 
         return replace(self, **updates) if updates else self

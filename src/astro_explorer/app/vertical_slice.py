@@ -34,22 +34,31 @@ import pandas as pd
 
 from ..coordinates.inspector import (
     NoteRow,
+    absolute_planet_position,
     planet_distance_rows,
+    planet_to_star_distance,
     star_coordinate_rows,
 )
+from ..coordinates.astrometry import (
+    AstrometricState,
+    PropagatedAstrometry,
+    propagate_astrometry,
+)
 from ..coordinates.system_frame import SystemFrame
+from ..data.gaia import GaiaHostIndex
 from ..data.nasa_archive import SolutionPolicy
 from ..data.schema import PlanetRecord, StarRecord, build_planet_record
 from ..physics.ephemeris import JD_UNIX_EPOCH
-from ..physics.node_semantics import resolve_node_azimuth
+from ..physics.epoch import TimeScale, astropy_time
+from ..physics.timed_state import TimedOrbitalState
 from ..physics.orbital_elements import PhaseKnowledge
+from ..physics.orbital_elements import state_at_mean_anomaly as state_from_elements
 from ..physics.phase import PhaseSolution, PhaseStatus
 from ..physics.state_vectors import (
     StateVector,
     expected_specific_energy,
     gravitational_parameter,
     specific_orbital_energy,
-    state_at_mean_anomaly,
 )
 from ..provenance import Status
 
@@ -115,6 +124,18 @@ class SystemSlice:
     planets: list[PlanetRecord]
     policy: SolutionPolicy = SolutionPolicy.DEFAULT_SOLUTION
     source: str = ""
+
+    #: The host's Gaia DR3 astrometry, read from the committed offline cache
+    #: (Explorer C3.6). ``None`` when the host is not in the cache, which is
+    #: a normal state and not an error: every absolute position it would
+    #: have unlocked is then blocked with a stated reason instead.
+    astrometry: AstrometricState | None = None
+
+    #: The time scale the slice's Julian dates are read in. Kept beside the
+    #: clock rather than assumed at each use, because a bare float has no
+    #: scale and this is the value that turns one into an Astropy time.
+    time_scale: TimeScale = TimeScale.JD_UNSPECIFIED
+
     _mu: float | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -190,24 +211,105 @@ class SystemSlice:
         ``M -> E -> r_perifocal -> R_z(Omega) R_x(i) R_z(omega)``, using the
         display-normalised elements so an unknown node is a documented zero
         rather than an omission.
+
+        Explorer C3.6 removes the last manual angle path here. This method
+        used to unpack ``i``, ``omega`` and ``Omega`` itself and call the
+        numeric propagator directly, which meant the slice was a *fourth*
+        place that had to remember
+        :func:`~astro_explorer.physics.node_semantics.resolve_node_azimuth`.
+        It remembered - but "three call sites all apply the conversion" is a
+        property that has to be re-established after every edit, whereas
+        going through
+        :func:`~astro_explorer.physics.orbital_elements.state_at_mean_anomaly`
+        makes it one. The provenance-aware wrapper owns the angle policy;
+        this method owns the phase and the gravitational parameter.
         """
         solution = self.phase(record, time_jd)
         anomaly = solution.mean_anomaly
         if anomaly is None or not record.elements.semimajor_axis.is_known:
             return None
 
-        display = record.elements.for_display()
-        return state_at_mean_anomaly(
-            display.semimajor_axis.value_in(u.au),
-            display.eccentricity.value_in(u.dimensionless_unscaled, 0.0),
-            anomaly,
-            inclination=display.inclination.value_in(u.rad, 0.0),
-            argument_of_periapsis=display.argument_of_periastron.value_in(u.rad, 0.0),
-            # Position angle -> internal azimuth; never the raw catalogue value.
-            longitude_of_ascending_node=resolve_node_azimuth(
-                display.longitude_of_ascending_node
-            ),
-            mu=self.mu,
+        return state_from_elements(record.elements.for_display(), anomaly, mu=self.mu)
+
+    # -- astrometry (Explorer C3.6) ---------------------------------------
+    def obstime(self, time_jd: float):
+        """The slice's clock as an Astropy time. **One conversion point.**
+
+        Everything in this slice that needs an astronomical instant -
+        the host's propagation, a target star's propagation - goes through
+        here, so "the host, the target star and the planet are at the same
+        time" is a property of one function rather than an agreement
+        between three call sites.
+        """
+        return astropy_time(time_jd, self.time_scale)
+
+    def host_astrometry(self, time_jd: float) -> PropagatedAstrometry | None:
+        """The host's astrometry propagated to ``time_jd``.
+
+        None only when the host has no cached astrometry at all. Every other
+        shortfall - no reference epoch, one proper-motion component, no
+        radial velocity - comes back *inside* the result as a blocker, so
+        the caller can say which gate closed rather than only that one did.
+        """
+        return propagate_astrometry(self.astrometry, self.obstime(time_jd))
+
+    def timed_state(self, record: PlanetRecord, time_jd: float) -> TimedOrbitalState | None:
+        """:meth:`state` with the instant it holds at attached.
+
+        The scientific form. :meth:`state` returns a bare
+        :class:`StateVector`, which is what the renderer and the energy
+        check want and is exactly what must not reach a publication path: an
+        undated vector cannot disagree with a host position from another
+        decade, so it would combine with one perfectly.
+        """
+        state = self.state(record, time_jd)
+        if state is None:
+            return None
+        return TimedOrbitalState(
+            state=state,
+            obstime=self.obstime(time_jd),
+            phase=self.phase(record, time_jd),
+            # The *raw* elements, not the display-normalised ones: the
+            # orientation gate has to see that an inclination was never
+            # published, and ``for_display`` replaces exactly that fact with
+            # a documented zero.
+            elements=record.elements,
+            time_scale=record.elements.epoch_scale,
+        )
+
+    def absolute_planet_position(self, record: PlanetRecord, time_jd: float):
+        """The planet's absolute ICRS position row at ``time_jd``.
+
+        The misuse-proof entry point. It propagates the host and the orbit
+        to one instant and checks the node gates itself, so there is no
+        argument a caller can pair wrongly - the two things that must agree
+        are both derived from ``time_jd`` inside this method.
+        """
+        return absolute_planet_position(
+            self.star.position,
+            self.timed_state(record, time_jd),
+            node=record.elements.longitude_of_ascending_node,
+            astrometry=self.host_astrometry(time_jd),
+        )
+
+    def planet_to_star_distance(
+        self, record: PlanetRecord, time_jd: float, other: "SystemSlice"
+    ):
+        """Distance from this planet to another system's host at ``time_jd``.
+
+        Takes the other *system* rather than a bare
+        :class:`~astro_explorer.coordinates.frames.SkyPosition`, because the
+        target star has to be propagated too and only the system knows its
+        astrometry. All three clocks are then set from the same
+        ``time_jd``.
+        """
+        return planet_to_star_distance(
+            self.star.position,
+            self.timed_state(record, time_jd),
+            other.star.position,
+            node=record.elements.longitude_of_ascending_node,
+            astrometry=self.host_astrometry(time_jd),
+            other_astrometry=other.host_astrometry(time_jd),
         )
 
     def framed_position(self, record: PlanetRecord, time_jd: float):
@@ -238,10 +340,15 @@ class SystemSlice:
         :meth:`framed_position` and deliberately does not use it.
         """
         state = self.state(record, time_jd)
+        # The host is propagated to the *same* ``time_jd`` the orbit was, and
+        # both go into one row builder. That is the C3.6 common-time rule:
+        # it is not a convention the caller has to observe, it is the only
+        # shape this method can be written in.
         rows = planet_distance_rows(
             record.elements,
-            None if state is None else state.position,
+            self.timed_state(record, time_jd),
             host=self.star.position,
+            astrometry=self.host_astrometry(time_jd),
         )
         # Every instantaneous row above is only as meaningful as the phase it
         # was evaluated at, so the qualifier travels with them rather than
@@ -555,10 +662,21 @@ def build_slice(
     if star.position is not None and star.position.has_distance:
         host_pc = star.position.cartesian_pc()
 
+    # Explorer C3.6: astrometry comes from the committed Gaia DR3 cache, so
+    # this is a file read and never a network call. A host that is not in
+    # the cache simply gets no astrometric state.
+    try:
+        astrometry = GaiaHostIndex(resources=resources).state_for_host(host_name)
+    except (OSError, ValueError):
+        # A corrupt or unreadable cache must not stop a system being drawn;
+        # it costs the absolute positions, which then say why.
+        astrometry = None
+
     return SystemSlice(
         frame=SystemFrame.for_host(host_name, host_pc),
         star=star,
         planets=records,
         policy=policy,
         source=str(catalog.attrs.get("path", "in-memory catalogue")),
+        astrometry=astrometry,
     )

@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 
 from astro_explorer.physics.orbital_elements import OrbitalElements
-from astro_explorer.physics.node_semantics import resolve_node_azimuth
+from astro_explorer.physics.node_semantics import NodeConvention, resolve_node_azimuth
 from astro_explorer.physics.orbital_semantics import OrbitValidity, PeriastronConvention
 from astro_explorer.physics.orientation import (
     position_from_eccentric_anomaly,
@@ -80,14 +80,30 @@ def _elements(
     eccentricity=0.4,
     axis=1.0,
     convention=PeriastronConvention.PLANET,
+    node_convention=NodeConvention.PA_EAST_OF_NORTH_RECEDING,
 ) -> OrbitalElements:
-    """Elements with exactly the angles a test wants measured."""
+    """Elements with exactly the angles a test wants measured.
+
+    ``node_convention`` is stated rather than left to a default. Every test
+    below that gives a ``node_deg`` is asserting something about a
+    *catalogued position angle*, so the fixture has to say that the number
+    is one: since C3.6 a measured node whose convention was never recorded
+    is not drawn at its published value at all, and a fixture that stayed
+    silent would be testing the normalisation instead of the conversion.
+    Pass ``NodeConvention.UNSPECIFIED`` for the unrecorded case.
+    """
 
     def angle(value):
         return (
             measured(float(value), u.deg, provenance="test").to(u.rad)
             if value is not None
             else None
+        )
+
+    node = angle(node_deg)
+    if node is not None and node_convention is not NodeConvention.UNSPECIFIED:
+        node = replace(
+            node, extra=dict(node.extra, node_convention=node_convention.value)
         )
 
     return OrbitalElements(
@@ -97,7 +113,7 @@ def _elements(
         period=measured(365.0, u.day, provenance="test"),
         inclination=angle(inclination_deg),
         argument_of_periastron=angle(omega_deg),
-        longitude_of_ascending_node=angle(node_deg),
+        longitude_of_ascending_node=node,
         periastron_convention=convention,
     )
 
@@ -652,10 +668,17 @@ def test_a_known_node_annotation_uses_its_actual_provenance(frame):
     observation.
     """
     elements = _elements(inclination_deg=45.0, node_deg=30.0)
+    fitted = derived(
+        np.deg2rad(30.0), u.rad, provenance="test: from a fitted astrometric arc"
+    )
+    # A fitted astrometric arc is reported as a position angle, and since
+    # C3.6 the fit has to say so: a derived node under an unrecorded
+    # convention is drawn at the normalisation, not at its own value.
     elements = replace(
         elements,
-        longitude_of_ascending_node=derived(
-            np.deg2rad(30.0), u.rad, provenance="test: from a fitted astrometric arc"
+        longitude_of_ascending_node=replace(
+            fitted,
+            extra={"node_convention": NodeConvention.PA_EAST_OF_NORTH_RECEDING.value},
         ),
     )
 
@@ -766,9 +789,13 @@ def test_the_guide_node_agrees_with_the_propagated_orbit():
 def test_the_slice_state_uses_the_canonicalised_node(catalog):
     """The third production route - the propagated state - converts too.
 
-    ``SystemSlice.state`` builds its own call into the propagator rather
-    than going through ``_display_angles``, so it is a separate place the
-    conversion could have been missed.
+    ``SystemSlice.state`` used to unpack the angles itself and call the
+    numeric propagator directly, which made it a fourth place that had to
+    remember the conversion. Since C3.6 it goes through
+    ``orbital_elements.state_at_mean_anomaly``, the provenance-aware
+    wrapper that owns the angle policy - so this test now pins that the
+    slice and the wrapper agree, rather than that two hand-written call
+    sites happen to.
     """
     from astro_explorer.physics.node_semantics import resolve_node_azimuth
     from astro_explorer.physics.state_vectors import state_at_mean_anomaly

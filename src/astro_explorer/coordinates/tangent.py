@@ -80,13 +80,19 @@ blocks:
   determines the node only modulo 180 degrees - ``(omega, Omega)`` and
   ``(omega + pi, Omega - pi)`` project identically, and only radial-velocity
   or equivalent line-of-sight information tells them apart;
-* the **coordinate epoch** must be handled. :class:`SkyPosition` carries no
-  obstime, proper motion or radial velocity, so a host position is at its
-  catalogue epoch while the planet offset is at the requested time. For a
-  nearby high-proper-motion star that mismatch is far larger than the
-  AU-scale offset it would be added to.
+* the **coordinate epoch** must be handled. C3.5 could only defer this,
+  because :class:`SkyPosition` carries no obstime, proper motion or radial
+  velocity: a host position was at its catalogue epoch while the planet
+  offset was at the requested time, and for a nearby high-proper-motion
+  star that mismatch is far larger than the AU-scale offset it would be
+  added to. C3.6 supplies the missing state as
+  :class:`~astro_explorer.coordinates.astrometry.PropagatedAstrometry`, so
+  this gate is now satisfied by a propagated position at a stated instant
+  rather than deferred by a boolean.
 
-So this slice ships the transform and keeps the absolute position withheld.
+So this module ships the transform and asks for the astrometry; what it
+still refuses to do is publish a position for an orbit whose node is a
+convention.
 """
 
 from __future__ import annotations
@@ -96,18 +102,23 @@ import astropy.units as u
 import numpy as np
 
 from ..physics.node_semantics import (
+    NODE_CONVENTION_UNSTATED,
+    NODE_SENSE_UNRESOLVED,
     NodeConvention,
     NodeSense,
     NodeSenseEvidence,
     azimuth_to_position_angle,
     node_convention_of,
     node_is_constrained,
+    node_publication_blockers,
     node_sense_evidence_of,
     node_sense_of,
     position_angle_to_azimuth,
     resolve_node_azimuth,
 )
+from ..physics.orbital_semantics import absolute_orientation_blockers
 from ..provenance import Parameter
+from .astrometry import PropagatedAstrometry
 from .frames import SkyPosition
 
 __all__ = [
@@ -127,9 +138,12 @@ __all__ = [
     "node_convention_of",
     "node_sense_of",
     "node_sense_evidence_of",
+    "node_is_constrained",
     "resolve_node_azimuth",
     "absolute_position_blockers",
-    "EPOCH_NOT_MODELLED",
+    "absolute_orientation_blockers",
+    "node_publication_blockers",
+    "ASTROMETRY_NOT_PROPAGATED",
     "NODE_CONVENTION_UNSTATED",
     "NODE_SENSE_UNRESOLVED",
     "POLE_DEGENERATE",
@@ -158,19 +172,15 @@ POLE_TOLERANCE_DEG = 1e-6
 #: Reasons an absolute position cannot be published. Each is a separate
 #: sentence so several can be reported together - a row blocked for three
 #: reasons should say three, not pick one.
-EPOCH_NOT_MODELLED = (
-    "the coordinate epoch is not modelled - the host has no obstime, proper "
-    "motion or radial velocity, so its catalogue-epoch position cannot be "
-    "combined with a planet offset at the requested time"
+ASTROMETRY_NOT_PROPAGATED = (
+    "no astrometric state was propagated to the requested time, so the "
+    "host's position is at an unstated epoch and cannot be combined with a "
+    "planet offset at that time"
 )
-NODE_CONVENTION_UNSTATED = (
-    "the node convention was not recorded, so the catalogued angle does not "
-    "identify a direction on the sky"
-)
-NODE_SENSE_UNRESOLVED = (
-    "the ascending/descending sense of the node is not resolved, so the "
-    "orientation is known only modulo 180 degrees"
-)
+#: ``NODE_CONVENTION_UNSTATED`` and ``NODE_SENSE_UNRESOLVED`` are re-exported
+#: from :mod:`astro_explorer.physics.node_semantics`, which owns them: they
+#: describe what a catalogue recorded about an angle, not anything about the
+#: tangent basis. Existing importers of this module keep working.
 POLE_DEGENERATE = (
     "the host is at a celestial pole, where right ascension is not a unique "
     "physical direction and the sky-plane azimuth is gauge-dependent"
@@ -267,31 +277,59 @@ def system_offset_to_icrs_pc(host: SkyPosition | None, offset_au) -> np.ndarray 
 
 def absolute_position_blockers(
     host: SkyPosition | None,
-    node: Parameter | None,
+    node: Parameter | None = None,
     *,
-    epoch_resolved: bool = False,
+    astrometry: "PropagatedAstrometry | None" = None,
+    elements=None,
 ) -> list[str]:
     """Every reason an absolute planet position may not be published.
 
     Returns them all rather than the first, because a row blocked for three
     reasons should say three. An empty list means every scientific gate is
-    satisfied - which, with :class:`SkyPosition` carrying no epoch or space
-    motion, does not currently happen for any real object.
+    satisfied.
+
+    ``astrometry`` is what C3.6 puts where C3.5 had ``epoch_resolved:
+    bool``. The difference is not cosmetic. A boolean was an *assertion*
+    that the epoch had been handled, and the only thing standing between a
+    correct program and a wrong one was that nobody wrote ``True``. A
+    :class:`~astro_explorer.coordinates.astrometry.PropagatedAstrometry` is
+    the handling itself: it carries the instant, the propagated position and
+    the list of things it could not do. There is no value of this argument
+    that opens the gate without a real propagation behind it, and the
+    reasons a propagation fell short travel through into this list rather
+    than being collapsed into one word.
+
+    ``elements`` is the C3.6 second-audit correction. The node gates are
+    necessary and **not sufficient**: a unique physical orientation also
+    needs the inclination and the planet-frame argument of periapsis, and
+    an orbit whose plane was drawn face-on for display could otherwise reach
+    a published ICRS coordinate on the strength of a tagged node alone. When
+    an element set is supplied its node is authoritative and the full
+    orientation gate runs; passing only ``node`` keeps the narrower check,
+    which is enough for the callers that are asking about the node itself
+    and can never publish, because publication additionally requires a dated
+    orbital state that carries its elements.
+
+    The pole check uses the **propagated** declination when there is one.
+    A star can cross the pole tolerance between its reference epoch and the
+    requested date, and the position being published is the propagated one.
     """
     reasons: list[str] = []
 
-    if not node_is_constrained(node):
-        reasons.append(NODE_SENSE_UNRESOLVED)
+    if elements is not None:
+        reasons.extend(absolute_orientation_blockers(elements))
     else:
-        if not node_convention_of(node).is_stated:
-            reasons.append(NODE_CONVENTION_UNSTATED)
-        if not node_sense_of(node).is_resolved:
-            reasons.append(NODE_SENSE_UNRESOLVED)
+        reasons.extend(node_publication_blockers(node))
+
+    if astrometry is None:
+        reasons.append(ASTROMETRY_NOT_PROPAGATED)
+    else:
+        reasons.extend(r for r in astrometry.blockers if r not in reasons)
+        if not astrometry.is_publishable and not astrometry.blockers:
+            reasons.append(ASTROMETRY_NOT_PROPAGATED)
+        host = astrometry.position
 
     if host is not None and is_pole_degenerate(host.dec.value_in(u.deg)):
         reasons.append(POLE_DEGENERATE)
-
-    if not epoch_resolved:
-        reasons.append(EPOCH_NOT_MODELLED)
 
     return reasons

@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import astropy.units as u
 import numpy as np
 
 from ..coordinates.system_frame import SystemFrame
+from ..physics.node_semantics import NodeConvention
 from ..physics.orbital_elements import OrbitalElements
 from ..physics.orbital_semantics import PeriastronConvention
 from ..provenance import measured
@@ -69,6 +70,21 @@ def _angle(degrees: float):
     ).to(u.rad)
 
 
+def _node(degrees: float):
+    """A node angle that says which convention it is quoted in.
+
+    The frame's whole subject is a *fully determined* orientation, and since
+    C3.6 a node with no recorded convention is not one: the number would be
+    withheld from the transform and the normalisation drawn instead. So the
+    constructed element set states what it means, which is what a catalogue
+    with a convention column would give.
+    """
+    return replace(
+        _angle(degrees),
+        extra={"node_convention": NodeConvention.PA_EAST_OF_NORTH_RECEDING.value},
+    )
+
+
 def _constructed(convention: PeriastronConvention) -> OrbitalElements:
     """An element set with every orientation angle published.
 
@@ -83,7 +99,7 @@ def _constructed(convention: PeriastronConvention) -> OrbitalElements:
         period=measured(365.0, u.day, provenance="constructed demonstration"),
         inclination=_angle(38.0),
         argument_of_periastron=_angle(55.0),
-        longitude_of_ascending_node=_angle(120.0),
+        longitude_of_ascending_node=_node(120.0),
         periastron_convention=convention,
         reference="constructed for the C2 demonstration; not a catalogue system",
     )

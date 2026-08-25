@@ -543,7 +543,7 @@ whole system's motion relative to the Sun and says nothing about which of a
 planet's two nodes recedes. Since that distinction is invisible in the
 number, an unevidenced `RESOLVED` tag falls back to `MODULO_180`.
 
-### The epoch gate currently blocks everything
+### The epoch gate blocked everything, and C3.6 opened it
 
 `SkyPosition` carries no obstime, proper motion or radial velocity. So a
 host position is at its catalogue epoch while the planet offset is at the
@@ -551,8 +551,13 @@ requested time. For a nearby, high-proper-motion star that mismatch is a
 **larger physical error than the AU-scale offset it would be added to** — so
 it blocks rather than being waved through as small.
 
+C3.5 could only model that as a boolean, `epoch_resolved`, which defaulted
+to `False`. [Explorer C3.6](explorer-c36.md) replaced it with real Gaia DR3
+astrometry propagated by Astropy to the requested instant, so the gate is
+now satisfied by a state rather than deferred by a flag.
+
 The result: this slice ships the transform, and no real object publishes an
-absolute position.
+absolute position — after C3.6 the reason is the node alone.
 `test_no_real_system_publishes_an_absolute_position` sweeps the whole
 snapshot to prove it, and
 `test_no_published_planet_triplet_claims_a_celestial_frame` from C3 still
@@ -579,6 +584,6 @@ it was about the star instead of the planet.
 ## What comes after
 
 Modelling coordinate epoch and space motion (obstime, proper motion, radial
-velocity, evaluated at one common epoch via Astropy) is what would open the
-epoch gate. That is its own slice, not a detail to smuggle into a plotting
-milestone.
+velocity, evaluated at one common epoch via Astropy) is what opens the epoch
+gate. That was its own slice, not a detail smuggled into a plotting
+milestone: see [`explorer-c36.md`](explorer-c36.md).

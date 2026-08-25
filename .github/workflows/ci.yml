@@ -60,19 +60,69 @@ jobs:
       - name: SystemFrame to ICRS basis tests (Explorer C3.5)
         run: pytest tests/regression/test_explorer_c35.py -q
 
+      # C3.6 replaces the last deliberately closed gate - the coordinate
+      # epoch - with real Gaia DR3 astrometry propagated by Astropy. The
+      # failure it guards against is silent by construction: a missing
+      # radial velocity read as zero, or a proper motion applied from the
+      # wrong reference epoch, produces a confident position that is wrong
+      # by more than the planet offset it was added to.
+      - name: Astrometric epoch and space-motion tests (Explorer C3.6)
+        run: pytest tests/regression/test_explorer_c36.py -q
+
       - name: Full test suite
         run: pytest -q
 
       - name: Offline check
         # The application must work from the committed snapshot with no
-        # network. Everything below already runs offline; this asserts it.
+        # network. Everything below already runs offline; this asserts it,
+        # and since C3.6 it asserts the astrometric state too: the Gaia
+        # cache is committed, so a host's proper motion and reference epoch
+        # must be readable and propagatable with the network unavailable.
         run: |
           python - <<'PY'
+          import socket
+
+          from astropy.time import Time
+
           from astro_explorer.app.vertical_slice import build_slice, load_reference_catalog
+          from astro_explorer.coordinates.astrometry import MotionKnowledge
+
+          class NoNetwork(socket.socket):
+              def __init__(self, *a, **k):
+                  raise OSError("the offline check forbids network access")
+
+          socket.socket = NoNetwork
+
           catalog = load_reference_catalog()
+          tiers = {}
           for host in ("HD 80606", "Kepler-11", "TRAPPIST-1", "HD 219134"):
               system = build_slice(host, catalog)
-              print(host, "->", len(system.planets), "planet(s)")
+              state = system.astrometry
+              propagated = system.host_astrometry(2460000.0)
+              record = system.planets[0]
+              row = system.absolute_planet_position(record, 2460000.0)
+              print(
+                  "{0:<12} {1:<3} planet(s)  {2:<20} {3:<12} abs-pos: {4}".format(
+                      host,
+                      len(system.planets),
+                      "none" if state is None else state.knowledge.value,
+                      "publishable" if propagated is not None
+                      and propagated.is_publishable else "blocked",
+                      "published" if row.is_known else "withheld",
+                  )
+              )
+              # Every host in the committed snapshot is cross-matched, so a
+              # missing state here means the cache did not ship.
+              assert state is not None, host
+              assert state.reference_epoch is not None, host
+              assert state.reference_epoch.scale == "tcb", host
+              tiers[host] = state.knowledge
+
+          # The tiers have to stay distinguishable offline, or the check
+          # would pass just as happily against a cache that had lost the
+          # radial velocities and quietly called every host complete.
+          assert tiers["HD 80606"] is MotionKnowledge.FULL_SPACE_MOTION
+          assert tiers["TRAPPIST-1"] is MotionKnowledge.DIRECTION_ONLY
           PY
 
   opengl:

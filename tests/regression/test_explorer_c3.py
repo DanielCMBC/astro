@@ -50,7 +50,7 @@ from astro_explorer.coordinates.inspector import (
     system_frame_position,
 )
 from astro_explorer.coordinates.tangent import (
-    EPOCH_NOT_MODELLED,
+    ASTROMETRY_NOT_PROPAGATED,
     NODE_SENSE_UNRESOLVED,
 )
 from astro_explorer.provenance import Status, assumed, measured, unknown
@@ -355,6 +355,13 @@ def test_the_absolute_planet_position_is_not_published(hd80606):
     Marking the row assumed would still be the wrong repair. It would put a
     triplet labelled ICRS in front of a reader as though someone had
     measured it.
+
+    C3.6 sharpens it once more. The slice now propagates HD 80606's Gaia DR3
+    astrometry to the requested instant, so the epoch gate that used to
+    block this row alongside the node is genuinely satisfied - and the row
+    is still withheld, for the one reason that is left. A gate that opened
+    when the science supported it is what makes the remaining refusal a
+    scientific statement rather than a permanent stub.
     """
     record = hd80606.planet("HD 80606 b")
     row = _row(hd80606.inspect_planet(record, EPOCH_JD), "Absolute position")
@@ -363,7 +370,8 @@ def test_the_absolute_planet_position_is_not_published(hd80606):
     assert row.values is None
     assert row.status is Status.UNKNOWN
     assert NODE_SENSE_UNRESOLVED in row.note
-    assert EPOCH_NOT_MODELLED in row.note
+    # The epoch is no longer among the reasons: it was handled, not waived.
+    assert ASTROMETRY_NOT_PROPAGATED not in row.note
     # The reasons travel with the row, so a panel can say why.
     assert "modulo 180 degrees" in row.format()
 
@@ -374,6 +382,10 @@ def test_a_located_host_does_not_make_the_absolute_position_available(hd80606):
     HD 80606 has a usable parallax distance and, since C3.5, a valid tangent
     basis. The only thing missing is the node. If either of the other two
     were enough on its own, this is where that would show up.
+
+    This call passes no astrometry, so the epoch gate closes too - which is
+    the C3.6 default and the point of it: the gate is opened by supplying a
+    propagated state, never by omitting an argument.
     """
     assert hd80606.frame.located
     assert hd80606.star.position.has_distance
@@ -389,7 +401,7 @@ def test_a_located_host_does_not_make_the_absolute_position_available(hd80606):
     assert not row.is_known
     # The note names the node and the epoch, not the host, as the blockers.
     assert NODE_SENSE_UNRESOLVED in row.note
-    assert EPOCH_NOT_MODELLED in row.note
+    assert ASTROMETRY_NOT_PROPAGATED in row.note
     assert ABSOLUTE_POSITION_NO_HOST not in row.note
 
 
@@ -405,7 +417,7 @@ def test_an_unlocated_host_reports_both_reasons(trappist1):
 
     assert not row.is_known
     assert ABSOLUTE_POSITION_NO_HOST in row.note
-    assert EPOCH_NOT_MODELLED in row.note
+    assert ASTROMETRY_NOT_PROPAGATED in row.note
 
 
 def test_the_absolute_position_takes_no_frame_argument():

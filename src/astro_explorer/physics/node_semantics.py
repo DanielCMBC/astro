@@ -7,15 +7,17 @@ internal one. What it did *not* do was put that conversion on the
 production path.
 
 That gap is the reason this module exists at the physics level rather than
-in ``coordinates``. Three separate places feed a node angle into
+in ``coordinates``. Two production routes feed a node angle into
 ``R_z(Omega) R_x(i) R_z(omega)``:
 
 * :func:`~astro_explorer.physics.orbital_elements.position_at_eccentric_anomaly`
-  and its siblings, through ``_display_angles``;
-* the vertical slice's propagated state;
+  and its siblings, through ``_display_angles`` - which is also how the
+  vertical slice's propagated state reaches the transform, since C3.6
+  routed ``SystemSlice.state`` through the provenance-aware wrapper rather
+  than letting it unpack the angles itself;
 * the C2 orientation guides.
 
-If the conversion lives anywhere those three cannot reach, one of them will
+If the conversion lives anywhere those cannot reach, one of them will
 eventually pass a raw position angle straight into a rotation matrix, and
 the resulting orbit will be ninety degrees out and running backwards - while
 looking entirely reasonable.
@@ -52,6 +54,7 @@ insufficient case is named and rejected rather than merely undocumented.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 
 import astropy.units as u
@@ -69,11 +72,30 @@ __all__ = [
     "node_sense_of",
     "node_sense_evidence_of",
     "resolve_node_azimuth",
+    "resolve_node_azimuth_detailed",
+    "NodeAzimuth",
+    "NODE_CONVENTION_NOT_RENDERABLE",
+    "NODE_CONVENTION_UNSTATED",
+    "NODE_SENSE_UNRESOLVED",
     "NODE_KEY_CONVENTION",
     "NODE_KEY_SENSE",
     "NODE_KEY_EVIDENCE",
     "NODE_KEY_EVIDENCE_NOTE",
 ]
+
+#: Why a node may not contribute to a published absolute position. They
+#: live here rather than in :mod:`astro_explorer.coordinates.tangent`
+#: because they are statements about the *parameter* - what a catalogue did
+#: and did not record about an angle - and not about the tangent basis. That
+#: also lets one orientation gate report every reason together.
+NODE_CONVENTION_UNSTATED = (
+    "the node convention was not recorded, so the catalogued angle does not "
+    "identify a direction on the sky"
+)
+NODE_SENSE_UNRESOLVED = (
+    "the ascending/descending sense of the node is not resolved, so the "
+    "orientation is known only modulo 180 degrees"
+)
 
 #: Keys an ingestion path writes into ``Parameter.extra``.
 NODE_KEY_CONVENTION = "node_convention"
@@ -246,6 +268,104 @@ def node_sense_of(node: Parameter | None) -> NodeSense:
     return recorded
 
 
+#: Why a scientific node value was not used as a direction.
+NODE_CONVENTION_NOT_RENDERABLE = (
+    "the node was measured but its convention was not recorded, so the "
+    "number is not a position angle and is not drawn as one; the display "
+    "normalisation is shown instead"
+)
+
+
+@dataclass(frozen=True)
+class NodeAzimuth:
+    """The azimuth a node parameter is entitled to, and why.
+
+    :func:`resolve_node_azimuth` returns only the number, because that is
+    all a rotation matrix wants. This is the same answer with the reasoning
+    attached, for the display and provenance layers that have to say what
+    the reader is looking at.
+    """
+
+    azimuth_rad: float
+    """The internal azimuth, measured from ``+X`` (East) toward ``+Y``."""
+
+    position_angle_rad: float
+    """The sky position angle the azimuth came from."""
+
+    convention: NodeConvention
+    """The convention recorded on the parameter, if any."""
+
+    used_catalogue_value: bool
+    """False when the drawn angle is a normalisation, not the published one."""
+
+    note: str = ""
+    """Why the published value was not used, when it was not."""
+
+    @property
+    def is_display_normalisation(self) -> bool:
+        return not self.used_catalogue_value
+
+
+def resolve_node_azimuth_detailed(
+    node: Parameter | None, default: float = 0.0
+) -> NodeAzimuth:
+    """:func:`resolve_node_azimuth` with its reasoning attached.
+
+    Four cases, and the fourth is the one C3.6 adds:
+
+    * **no parameter, or no value** - the caller's ``default`` position
+      angle is used. That is the ordinary display normalisation, and the
+      published node genuinely does not exist for most exoplanets;
+    * **an ASSUMED_FOR_VISUALIZATION value** - used as a position angle.
+      Display normalisation is *allowed* to assume the standard convention
+      because it invented the number itself: ``Omega_PA = 0`` written by
+      :meth:`OrbitalElements.for_display` means North, and saying so is the
+      whole point of converting it;
+    * **a scientific value under a stated convention** - used, converted;
+    * **a scientific value under** :attr:`NodeConvention.UNSPECIFIED` -
+      **not used**. An angle whose convention nobody recorded is a number,
+      not a direction on the sky. Feeding it to the rotation would silently
+      assert the standard convention, which is the failure mode that is
+      right most of the time and therefore the worst one to have. The
+      documented normalisation is drawn instead and
+      :data:`NODE_CONVENTION_NOT_RENDERABLE` says so.
+
+    The fourth case cannot arise from the NASA archive, which publishes no
+    node at all. It is written now because the moment a provider *does*
+    ingest real node values - which is exactly what C3.6 starts doing for
+    astrometry - the silent path would already exist.
+    """
+    convention = node_convention_of(node)
+
+    if node is None or not node.is_known:
+        return NodeAzimuth(
+            azimuth_rad=position_angle_to_azimuth(default),
+            position_angle_rad=float(default),
+            convention=convention,
+            used_catalogue_value=False,
+        )
+
+    published = node.value_in(u.rad, default)
+    if published is None:  # pragma: no cover - value_in honours default
+        published = default
+
+    if node.status.is_scientific and not convention.is_stated:
+        return NodeAzimuth(
+            azimuth_rad=position_angle_to_azimuth(default),
+            position_angle_rad=float(default),
+            convention=convention,
+            used_catalogue_value=False,
+            note=NODE_CONVENTION_NOT_RENDERABLE,
+        )
+
+    return NodeAzimuth(
+        azimuth_rad=position_angle_to_azimuth(published),
+        position_angle_rad=float(published),
+        convention=convention,
+        used_catalogue_value=True,
+    )
+
+
 def resolve_node_azimuth(node: Parameter | None, default: float = 0.0) -> float:
     """The internal azimuth for a node parameter, in radians.
 
@@ -258,12 +378,37 @@ def resolve_node_azimuth(node: Parameter | None, default: float = 0.0) -> float:
 
     ``default`` is the position angle to assume when the node is unknown,
     and is itself converted - so the caller states a *sky* convention and
-    never has to think in internal axes.
+    never has to think in internal axes. It is also what a *measured* node
+    with an unrecorded convention falls back to; see
+    :func:`resolve_node_azimuth_detailed` for why that is a refusal rather
+    than a rounding of the truth.
     """
-    position_angle = default if node is None else node.value_in(u.rad, default)
-    if position_angle is None:  # pragma: no cover - value_in honours default
-        position_angle = default
-    return position_angle_to_azimuth(position_angle)
+    return resolve_node_azimuth_detailed(node, default).azimuth_rad
+
+
+def node_publication_blockers(node: Parameter | None) -> list[str]:
+    """Why this node may not fix an absolute orientation. Empty when it may.
+
+    The three states are not interchangeable and each gets its own sentence:
+
+    * no node at all - or a node that is a display normalisation rather than
+      an observation - leaves the orbit's rotation about the line of sight
+      entirely unconstrained;
+    * a node that is an observation but whose convention nobody recorded is
+      a number, not a direction on the sky;
+    * a node whose convention is stated but whose sense is not is known only
+      modulo 180 degrees, because ``(omega, Omega)`` and
+      ``(omega + pi, Omega - pi)`` project identically.
+    """
+    if not node_is_constrained(node):
+        return [NODE_SENSE_UNRESOLVED]
+
+    reasons: list[str] = []
+    if not node_convention_of(node).is_stated:
+        reasons.append(NODE_CONVENTION_UNSTATED)
+    if not node_sense_of(node).is_resolved:
+        reasons.append(NODE_SENSE_UNRESOLVED)
+    return reasons
 
 
 def node_is_constrained(node: Parameter | None) -> bool:
@@ -275,4 +420,4 @@ def node_is_constrained(node: Parameter | None) -> bool:
     )
 
 
-__all__ += ["node_is_constrained"]
+__all__ += ["node_is_constrained", "node_publication_blockers"]

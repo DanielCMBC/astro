@@ -434,8 +434,16 @@ def orientation_guides(
     omega_rad = periastron.value_in(u.rad, 0.0)
 
     i_known = elements.inclination.is_known
-    node_known = elements.longitude_of_ascending_node.is_known
     omega_known = elements.argument_of_periastron.is_known
+
+    # A node is drawn at its published value only when that value names a
+    # direction on the sky. ``for_display`` has already replaced one whose
+    # convention was never recorded with the normalisation (C3.6), so the
+    # test is on what is about to be *drawn*, not on what was published.
+    # Reading ``elements`` here instead is how a dashed guide ends up with a
+    # caption calling it measured.
+    node_published = elements.longitude_of_ascending_node.is_known
+    node_constrained = node.status is not Status.ASSUMED_FOR_VISUALIZATION
 
     def add(name, points, style, color, text):
         overlay.guides.append(
@@ -489,7 +497,7 @@ def orientation_guides(
                 _provenance_word(elements.inclination if i_known else inclination),
             )
         )
-        if not node_known:
+        if not node_constrained:
             overlay.annotations.append(
                 "The tilt of that plane is measured; the direction it is "
                 "tilted towards is not. The plane is therefore drawn dashed, "
@@ -512,7 +520,7 @@ def orientation_guides(
         )
 
     # -- the line of nodes -----------------------------------------------
-    if node_known or show_normalised:
+    if node_constrained or show_normalised:
         add(
             "ascending-node",
             node_line(node_rad, radius),
@@ -520,11 +528,25 @@ def orientation_guides(
             GUIDE_NODE_LINE,
             "line of nodes",
         )
-    if node_known:
+    if node_constrained:
         overlay.annotations.append(
             "Ascending node: {0} ({1}).".format(
                 node.to(u.deg).format(with_status=False),
                 _provenance_word(elements.longitude_of_ascending_node),
+            )
+        )
+    elif node_published:
+        overlay.annotations.append(
+            "Ascending node: {0} was published, but the convention it was "
+            "measured under was not recorded, so the number does not name a "
+            "direction on the sky and is not drawn as one. Display "
+            "normalisation Omega = 0 deg{1}.".format(
+                elements.longitude_of_ascending_node.to(u.deg).format(
+                    with_status=False
+                ),
+                "; the normalised line of nodes is drawn dashed"
+                if show_normalised
+                else ", so no line of nodes is drawn",
             )
         )
     else:

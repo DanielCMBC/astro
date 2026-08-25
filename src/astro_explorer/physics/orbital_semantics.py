@@ -29,6 +29,7 @@ import astropy.units as u
 import numpy as np
 
 from ..provenance import Parameter, Status, assumed, derived, unknown
+from .node_semantics import node_publication_blockers
 
 __all__ = [
     "PeriastronConvention",
@@ -37,7 +38,127 @@ __all__ = [
     "planet_to_stellar_reflex",
     "angular_difference",
     "resolve_argument_of_periapsis",
+    "absolute_orientation_blockers",
+    "INCLINATION_UNRESOLVED",
+    "PERIAPSIS_DIRECTION_UNRESOLVED",
+    "PERIASTRON_CONVENTION_UNSTATED",
+    "CIRCULAR_ORBIT_PERIAPSIS_NOTE",
 ]
+
+
+# ---------------------------------------------------------------------------
+# The absolute-orientation publication gate (Explorer C3.6)
+# ---------------------------------------------------------------------------
+
+INCLINATION_UNRESOLVED = (
+    "the inclination is not a published measurement, so the orbital plane is "
+    "normalised for display and its tilt in space is not known"
+)
+PERIAPSIS_DIRECTION_UNRESOLVED = (
+    "the argument of periapsis is not published, so the orbit's orientation "
+    "within its own plane is normalised for display"
+)
+PERIASTRON_CONVENTION_UNSTATED = (
+    "the argument of periastron was published under an unstated convention, "
+    "so periapsis may be the star's reflex direction and 180 degrees from "
+    "the planet's"
+)
+
+#: Why a scientifically circular orbit is still blocked on periapsis.
+#:
+#: For ``e = 0`` there is no periapsis, so ``omega`` is not a physical
+#: degree of freedom and demanding it looks like an over-refusal. It is a
+#: deliberate one, and the reason is that the exemption is not a property of
+#: the *orientation* alone:
+#:
+#: * the position depends on the argument of latitude ``u = omega + nu``;
+#: * for a transit or conjunction anchor, ``nu_t = pi/2 - omega`` at the
+#:   anchor, so ``u(t) = pi/2 + n(t - t_t)`` and ``omega`` cancels exactly.
+#:   Such an orbit genuinely does not need it;
+#: * for a periastron anchor, or a mean anomaly quoted at an epoch, the
+#:   anchor is measured *from periapsis* - which does not exist at ``e = 0``,
+#:   so the epoch itself has no meaning and nothing is recovered.
+#:
+#: So the correct rule needs the phase anchor kind, and phase and orientation
+#: are kept as separate epistemic dimensions in this codebase on purpose.
+#: Rather than fold one into the other for a case that no catalogue row in
+#: the snapshot can currently reach - every real exoplanet is already blocked
+#: on the node - this stays conservative and the analysis stays written down.
+CIRCULAR_ORBIT_PERIAPSIS_NOTE = (
+    "a circular orbit has no periapsis direction to publish; lifting this "
+    "blocker needs the phase anchor as well, because omega cancels for a "
+    "transit anchor and the epoch is undefined for a periastron one"
+)
+
+
+def absolute_orientation_blockers(elements) -> tuple[str, ...]:
+    """Every reason an orbit's orientation cannot fix an absolute position.
+
+    Explorer C3.6. The node gates alone are necessary and **not
+    sufficient**, which is the hole this closes: a planet whose inclination
+    and argument of periapsis were normalised for display could reach a
+    published ICRS coordinate as long as its node happened to be tagged, and
+    the number looked entirely ordinary.
+
+    A unique physical orientation needs all three Euler angles to be
+    observations:
+
+    ``inclination``
+        the tilt of the orbital plane. A display normalisation draws the
+        orbit face-on, which is a picture and not a plane in space.
+
+    ``argument of periapsis``
+        where periapsis points *within* that plane, and under a **stated
+        convention**: radial-velocity papers habitually report the star's
+        reflex orbit and transit papers the planet's, so an unstated one
+        leaves periapsis ambiguous by 180 degrees - which for an eccentric
+        orbit puts the planet on the wrong side of its star.
+
+    ``longitude of the ascending node``
+        the rotation about the line of sight, with its convention stated and
+        its sense resolved. Delegated to
+        :func:`~astro_explorer.physics.node_semantics.node_publication_blockers`.
+
+    Every reason is returned rather than the first, because a row blocked
+    for four reasons should say four.
+
+    This is deliberately **not** merged into
+    :class:`~astro_explorer.physics.phase.PhaseStatus`. Phase and
+    orientation are separate epistemic dimensions here: a transit epoch is a
+    real observation of *when*, and it says nothing about *which way*. The
+    two gates are checked side by side and reported side by side.
+    """
+    reasons: list[str] = []
+
+    if not elements.inclination.is_scientific:
+        reasons.append(INCLINATION_UNRESOLVED)
+
+    # The resolved planet-frame value already encodes the convention rule -
+    # MEASURED under PLANET, DERIVED after a reflex conversion, ASSUMED under
+    # AS_REPORTED - so this asks it rather than restating the table.
+    omega = elements.argument_of_periastron
+    resolved = resolve_argument_of_periapsis(omega, elements.periastron_convention)
+    if not resolved.is_scientific:
+        if omega.is_scientific and elements.periastron_convention is (
+            PeriastronConvention.AS_REPORTED
+        ):
+            # A real published number under a convention nobody stated.
+            # Naming the convention is the useful message here; adding "the
+            # direction is unresolved" underneath would say the same thing
+            # twice about one root cause.
+            reasons.append(PERIASTRON_CONVENTION_UNSTATED)
+        else:
+            # Never published, or filled in by ``for_display`` so a scene
+            # could be drawn. Both are "nobody measured this", and a display
+            # normalisation must not be reported as a convention problem -
+            # it would suggest the number exists and only its meaning is
+            # missing.
+            reasons.append(PERIAPSIS_DIRECTION_UNRESOLVED)
+
+    reasons.extend(
+        node_publication_blockers(elements.longitude_of_ascending_node)
+    )
+    return tuple(reasons)
 
 
 class PeriastronConvention(str, Enum):

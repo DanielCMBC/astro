@@ -35,7 +35,17 @@ import pytest
 from astropy.coordinates import SkyCoord
 
 from astro_explorer.app.vertical_slice import build_slice, load_reference_catalog
+from astro_explorer.coordinates.astrometry import (
+    AstrometricState,
+    propagate_astrometry,
+)
 from astro_explorer.coordinates.frames import Frame, SkyPosition, sky_position
+from astro_explorer.physics.epoch import astropy_time
+from astro_explorer.physics.orbital_elements import OrbitalElements
+from astro_explorer.physics.orbital_semantics import PeriastronConvention
+from astro_explorer.physics.phase import PhaseProvenance, PhaseSolution
+from astro_explorer.physics.state_vectors import StateVector
+from astro_explorer.physics.timed_state import TimedOrbitalState
 from astro_explorer.coordinates.inspector import (
     ABSOLUTE_POSITION_NO_HOST,
     ABSOLUTE_POSITION_NO_ORBIT,
@@ -44,7 +54,7 @@ from astro_explorer.coordinates.inspector import (
     planet_to_star_distance,
 )
 from astro_explorer.coordinates.tangent import (
-    EPOCH_NOT_MODELLED,
+    ASTROMETRY_NOT_PROPAGATED,
     LINE_OF_SIGHT,
     NODE_CONVENTION_UNSTATED,
     NODE_SENSE_UNRESOLVED,
@@ -350,6 +360,102 @@ def _resolved_node(value_rad=0.7):
     )
 
 
+#: The instant every gate-opening call below is evaluated at, as an
+#: Astropy time rather than a float. C3.5 opened the epoch gate with
+#: ``epoch_resolved=True``; C3.6 removed that argument, so these tests now
+#: have to supply what it was standing in for.
+OBSTIME = astropy_time(EPOCH_JD)
+
+
+def _propagated(host: SkyPosition, *, obstime=None):
+    """A real propagated state for a probe star with *measured* zero motion.
+
+    Not a stub. The star is given a stated reference epoch and proper-motion
+    and radial-velocity components that are genuinely zero and genuinely
+    measured - the case a survey reports for a distant source whose motion is
+    below its detection threshold. That makes propagation to any date exact,
+    so every numeric assertion in this file keeps the value it had when the
+    epoch gate was opened by a boolean, while the gate itself is now opened
+    by astrometry that could fail.
+
+    Measured zero is emphatically not the same as absent: an
+    :class:`AstrometricState` with unknown components reaches the same call
+    sites and is refused, which is what
+    ``tests/regression/test_explorer_c36.py`` checks.
+    """
+    state = AstrometricState(
+        position=host,
+        source_catalog="test",
+        source_id="probe",
+        reference_epoch=astropy_time(2451545.0),  # J2000.0
+        pm_ra_cosdec=measured(
+            0.0, u.mas / u.yr, provenance="test: measured zero proper motion"
+        ),
+        pm_dec=measured(
+            0.0, u.mas / u.yr, provenance="test: measured zero proper motion"
+        ),
+        radial_velocity=measured(
+            0.0, u.km / u.s, provenance="test: measured zero radial velocity"
+        ),
+    )
+    return propagate_astrometry(state, obstime or OBSTIME)
+
+
+def _oriented_elements(
+    *,
+    inclination_deg=63.0,
+    omega_deg=41.0,
+    node=None,
+    convention=PeriastronConvention.PLANET,
+    eccentricity=0.2,
+):
+    """An element set whose physical orientation is fully observed.
+
+    C3.6's second audit added the gate this satisfies: a unique absolute
+    position needs all three Euler angles to be observations, not just the
+    node. The defaults here are the *passing* case, so a test that is about
+    something else - a clock, a basis, an astrometric tier - is not
+    accidentally testing the orientation gate as well. Tests that are about
+    orientation deliberately weaken one angle at a time.
+    """
+    return OrbitalElements(
+        name="probe b",
+        semimajor_axis=measured(1.0, u.au, provenance="test"),
+        eccentricity=measured(eccentricity, provenance="test"),
+        period=measured(365.0, u.day, provenance="test"),
+        inclination=(
+            unknown(u.rad)
+            if inclination_deg is None
+            else measured(np.deg2rad(inclination_deg), u.rad, provenance="test")
+        ),
+        argument_of_periastron=(
+            unknown(u.rad)
+            if omega_deg is None
+            else measured(np.deg2rad(omega_deg), u.rad, provenance="test")
+        ),
+        longitude_of_ascending_node=_resolved_node() if node is None else node,
+        periastron_convention=convention,
+    )
+
+
+def _timed(offset_au, *, obstime=None, elements=None) -> TimedOrbitalState:
+    """A planet offset carrying the instant it holds at, and its orbit.
+
+    C3.6 made this mandatory for publication. A bare ``(3,)`` array cannot
+    disagree with the host's obstime, so it would combine with a host from
+    another decade without a murmur - and it cannot be asked how well its
+    orientation is known either. The phase is a published periastron epoch
+    and the orientation is fully observed, so what is under test in this
+    file stays under test.
+    """
+    return TimedOrbitalState(
+        state=StateVector(position=np.asarray(offset_au, dtype=np.float64)),
+        obstime=obstime or OBSTIME,
+        phase=PhaseSolution(0.0, PhaseProvenance.PERIASTRON_EPOCH),
+        elements=elements if elements is not None else _oriented_elements(),
+    )
+
+
 @pytest.mark.parametrize("axis,expected", [(0, "east"), (1, "north"), (2, "away")])
 def test_a_one_au_offset_follows_the_axis_it_was_given(axis, expected):
     """Each canonical axis must land on its own direction, alone."""
@@ -442,12 +548,17 @@ def test_ordinary_declinations_are_not_flagged():
 def test_a_pole_host_cannot_publish_an_absolute_position():
     """No unique physical position angle exists there, so none is claimed."""
     pole = sky_position("pole", 0.0, 90.0, catalog_distance_pc=10.0)
-    reasons = absolute_position_blockers(pole, _resolved_node(), epoch_resolved=True)
+    reasons = absolute_position_blockers(
+        pole, _resolved_node(), astrometry=_propagated(pole)
+    )
 
     assert POLE_DEGENERATE in reasons
 
     row = absolute_planet_position(
-        pole, np.array([1.0, 0.0, 0.0]), node=_resolved_node(), epoch_resolved=True
+        pole,
+        np.array([1.0, 0.0, 0.0]),
+        node=_resolved_node(),
+        astrometry=_propagated(pole),
     )
     assert not row.is_known
     assert POLE_DEGENERATE in row.note
@@ -473,7 +584,7 @@ def test_an_unstated_node_convention_never_defaults_to_the_standard():
     sensed_only = _tagged(
         measured(0.7, u.rad, provenance="test"), sense=NodeSense.RESOLVED
     )
-    reasons = absolute_position_blockers(_probe(), sensed_only, epoch_resolved=True)
+    reasons = absolute_position_blockers(_probe(), sensed_only, astrometry=_propagated(_probe()))
     assert NODE_CONVENTION_UNSTATED in reasons
 
 
@@ -511,7 +622,7 @@ def test_a_modulo_180_node_does_not_unlock_an_absolute_position():
         sense=NodeSense.MODULO_180,
     )
     reasons = absolute_position_blockers(
-        _probe(), stated_but_ambiguous, epoch_resolved=True
+        _probe(), stated_but_ambiguous, astrometry=_propagated(_probe())
     )
     assert NODE_SENSE_UNRESOLVED in reasons
 
@@ -519,7 +630,7 @@ def test_a_modulo_180_node_does_not_unlock_an_absolute_position():
         _probe(),
         np.array([0.3, 0.0, 0.0]),
         node=stated_but_ambiguous,
-        epoch_resolved=True,
+        astrometry=_propagated(_probe()),
     )
     assert not row.is_known
     assert NODE_SENSE_UNRESOLVED in row.note
@@ -527,11 +638,14 @@ def test_a_modulo_180_node_does_not_unlock_an_absolute_position():
 
 def test_a_resolved_node_sense_does_unlock_it():
     """The gate is a gate, not a wall: RV-resolved information opens it."""
-    reasons = absolute_position_blockers(_probe(), _resolved_node(), epoch_resolved=True)
+    reasons = absolute_position_blockers(_probe(), _resolved_node(), astrometry=_propagated(_probe()))
     assert reasons == []
 
     row = absolute_planet_position(
-        _probe(), np.array([0.3, -0.1, 0.05]), node=_resolved_node(), epoch_resolved=True
+        _probe(),
+        _timed(np.array([0.3, -0.1, 0.05])),
+        node=_resolved_node(),
+        astrometry=_propagated(_probe()),
     )
     assert row.is_known
     assert row.frame is InspectorFrame.ICRS
@@ -578,28 +692,42 @@ def _absolute_row(system, record):
 
 
 def test_the_epoch_gate_blocks_by_default():
-    """SkyPosition has no obstime, proper motion or radial velocity.
+    """SkyPosition still has no obstime, proper motion or radial velocity.
 
-    So a host position is at its catalogue epoch while the planet offset is
-    at the requested time. For a nearby high-proper-motion star that
-    mismatch is a larger physical error than the AU-scale offset it would be
-    added to, which is why it blocks rather than being ignored as small.
+    So a bare host position is at its catalogue epoch while the planet
+    offset is at the requested time. For a nearby high-proper-motion star
+    that mismatch is a larger physical error than the AU-scale offset it
+    would be added to, which is why it blocks rather than being ignored as
+    small.
+
+    C3.6 did not repair this by adding fields to ``SkyPosition``: a position
+    type that *optionally* carries motion would let a caller build one
+    without and never find out. The motion lives on a separate
+    :class:`~astro_explorer.coordinates.astrometry.AstrometricState`, and
+    the gate opens only when a propagated result is handed in.
     """
     for field in ("obstime", "proper_motion", "pm_ra", "pm_dec", "radial_velocity"):
         assert field not in SkyPosition.__dataclass_fields__
 
     reasons = absolute_position_blockers(_probe(), _resolved_node())
-    assert EPOCH_NOT_MODELLED in reasons
+    assert ASTROMETRY_NOT_PROPAGATED in reasons
 
 
-def test_a_real_planet_is_blocked_by_the_epoch_and_the_node(hd80606):
-    """Both reasons are reported, not just the first one found."""
+def test_a_real_planet_is_blocked_by_the_node_alone(hd80606):
+    """C3.5 reported two reasons here; C3.6 leaves exactly one.
+
+    HD 80606 now has Gaia DR3 astrometry propagated to the requested
+    instant, so the epoch gate is satisfied by a real state rather than
+    deferred. The node gate is not, and it is the whole reason the row stays
+    withheld - which is what makes the refusal a statement about the
+    catalogue instead of a placeholder that never moved.
+    """
     record = hd80606.planet("HD 80606 b")
     row = _absolute_row(hd80606, record)
 
     assert not row.is_known
     assert NODE_SENSE_UNRESOLVED in row.note
-    assert EPOCH_NOT_MODELLED in row.note
+    assert ASTROMETRY_NOT_PROPAGATED not in row.note
 
 
 def test_no_real_system_publishes_an_absolute_position(hd80606, hd219134, trappist1):
@@ -622,7 +750,7 @@ def test_a_detached_host_reports_every_blocking_reason(trappist1):
 
     assert not row.is_known
     assert ABSOLUTE_POSITION_NO_HOST in row.note
-    assert EPOCH_NOT_MODELLED in row.note
+    assert ASTROMETRY_NOT_PROPAGATED in row.note
 
 
 def test_an_unpropagatable_orbit_says_so():
@@ -643,7 +771,7 @@ def test_the_normalised_realisation_carries_every_unresolved_reason():
     assert row.is_known
     assert row.status is Status.ASSUMED_FOR_VISUALIZATION
     assert NODE_SENSE_UNRESOLVED in row.note
-    assert EPOCH_NOT_MODELLED in row.note
+    assert ASTROMETRY_NOT_PROPAGATED in row.note
 
 
 def test_a_normalised_realisation_still_needs_an_origin_and_an_offset():
@@ -672,7 +800,7 @@ def test_the_planet_to_star_distance_needs_a_common_epoch(hd219134):
         node=_resolved_node(),
     )
     assert not result.is_known
-    assert EPOCH_NOT_MODELLED in result.note
+    assert ASTROMETRY_NOT_PROPAGATED in result.note
 
 
 def test_the_planet_to_star_distance_works_once_every_gate_is_open(hd219134):
@@ -681,12 +809,17 @@ def test_the_planet_to_star_distance_works_once_every_gate_is_open(hd219134):
     offset_au = np.array([0.3, -0.1, 0.05])
 
     distance = planet_to_star_distance(
-        host, offset_au, other, node=_resolved_node(), epoch_resolved=True
+        host,
+        _timed(offset_au),
+        other,
+        node=_resolved_node(),
+        astrometry=_propagated(host),
+        other_astrometry=_propagated(other),
     )
     assert distance.is_known
 
     planet = absolute_planet_position(
-        host, offset_au, node=_resolved_node(), epoch_resolved=True
+        host, _timed(offset_au), node=_resolved_node(), astrometry=_propagated(host)
     )
     expected = np.linalg.norm(other.cartesian_pc(Frame.ICRS) - planet.values)
     assert distance.value_in(u.pc) == pytest.approx(expected, rel=1e-14)
@@ -746,7 +879,7 @@ def test_an_unlocated_other_star_blocks_the_distance(trappist1):
         np.array([0.1, 0.0, 0.0]),
         trappist1.star.position,
         node=_resolved_node(),
-        epoch_resolved=True,
+        astrometry=_propagated(_probe()),
     )
     assert not result.is_known
     assert "no usable distance" in result.note
@@ -839,7 +972,7 @@ def test_a_resolved_tag_without_named_evidence_does_not_count():
     assert not NodeSenseEvidence.SYSTEMIC_RADIAL_VELOCITY.resolves_node
     assert node_sense_of(systemic) is NodeSense.MODULO_180
 
-    reasons = absolute_position_blockers(_probe(), unevidenced, epoch_resolved=True)
+    reasons = absolute_position_blockers(_probe(), unevidenced, astrometry=_propagated(_probe()))
     assert NODE_SENSE_UNRESOLVED in reasons
 
     # Named evidence is what makes the difference.

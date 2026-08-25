@@ -50,6 +50,10 @@ __all__ = [
     "Epoch",
     "MeanAnomalyAnchor",
     "tdb_minus_utc_seconds",
+    "astropy_time",
+    "orbital_time_jd",
+    "INSTANT_MATCH_TOLERANCE_DAYS",
+    "ASTROPY_SCALE_FOR_UNSTATED",
     "TDB_MINUS_UTC_FALLBACK_SECONDS",
     "BARYCENTRIC_MINUS_HELIOCENTRIC_MAX_SECONDS",
     "BARYCENTRIC_MINUS_GEOCENTRIC_MAX_SECONDS",
@@ -227,6 +231,102 @@ class TimeScale(str, Enum):
 
     def from_bjd(self, bjd: float) -> float:
         return float(bjd) - self.offset_to_bjd
+
+
+#: Astropy time scale for each stated catalogue convention. The mission
+#: offsets are *not* here: they are days, they belong to
+#: :meth:`TimeScale.to_bjd`, and a scale table that quietly also shifted the
+#: date would be two corrections wearing one name.
+_ASTROPY_SCALE = {
+    TimeScale.BJD_TDB: "tdb",
+    TimeScale.BKJD: "tdb",
+    TimeScale.BTJD: "tdb",
+    TimeScale.HJD_UTC: "utc",
+    TimeScale.JD_UTC: "utc",
+}
+
+#: What an unstated Julian date is read as when it must become an
+#: :class:`~astropy.time.Time`. See :func:`astropy_time` for why this is a
+#: defensible assumption *here* and nowhere near a transit ephemeris.
+ASTROPY_SCALE_FOR_UNSTATED = "tdb"
+
+#: Two instants closer than this are the same instant, project-wide. About
+#: 0.09 s - far below any astrometric reference epoch's own precision, far
+#: below the sub-minute ambiguity an unstated time scale already carries,
+#: and far above the float64 noise in a Julian date near 2.46e6.
+#:
+#: It lives here because "the host, the target star and the planet are at
+#: one time" has to mean the same thing on the stellar side and the orbital
+#: side. Two tolerances would eventually disagree, and the disagreement
+#: would show up as a separation that is accepted from one direction and
+#: refused from the other.
+INSTANT_MATCH_TOLERANCE_DAYS = 1e-6
+
+
+def astropy_time(jd: float, scale: TimeScale = TimeScale.JD_UNSPECIFIED):
+    """The explorer's clock as an :class:`astropy.time.Time`.
+
+    **The single conversion point** from the explorer's physical clock - a
+    full Julian date on the canonical axis, plus the
+    :class:`TimeScale` it was published in - to the Astropy time that
+    stellar space motion is evaluated at. Explorer C3.6 needs one because
+    the alternative is an astrometric API taking a bare ``time_jd: float``,
+    and a float has no scale: the host, the target star and the planet would
+    each be free to be read in a different one.
+
+    ``jd`` is a *full* Julian date, so a caller holding a mission-offset
+    date must have gone through :attr:`Epoch.canonical_jd` first. Passing a
+    raw BKJD here would be thirteen years wrong and there is nothing in a
+    float that could catch it.
+
+    An unstated scale is read as :data:`ASTROPY_SCALE_FOR_UNSTATED`. That is
+    an assumption, and it is stated rather than hidden: the residual is at
+    most about 569 s (:attr:`TimeScale.uncertainty_seconds_at`), which for
+    space motion is 1.8e-5 yr - on the fastest known proper motion, about
+    2e-4 mas, some three orders of magnitude below Gaia's own position
+    uncertainty. The same 569 s is fatal to a transit ephemeris, which is
+    exactly why it keeps travelling on the :class:`TimeScale` instead of
+    being declared absorbed here.
+    """
+    from astropy.time import Time
+
+    value = float(jd)
+    if not np.isfinite(value):
+        raise ValueError("an astrometric time must be a finite Julian date")
+    return Time(value, format="jd", scale=_ASTROPY_SCALE.get(scale, ASTROPY_SCALE_FOR_UNSTATED))
+
+
+def orbital_time_jd(time, scale: TimeScale = TimeScale.JD_UNSPECIFIED) -> float:
+    """A physical instant as a Julian date on the orbital clock's own axis.
+
+    **The single conversion point in the other direction**, and the one
+    C3.6 needs so the stellar side and the orbital side can be at the same
+    instant rather than at the same number.
+
+    :func:`astropy_time` turns a catalogue Julian date into an
+    :class:`~astropy.time.Time`; this turns a ``Time`` back into the Julian
+    date :meth:`OrbitalElements.phase_at` consumes. The two are exact
+    inverses, because both go through the same scale table: the instant is
+    expressed *in the scale the orbital epoch was published in*, so the
+    difference being taken inside ``phase_at`` - ``t - t0`` - is a
+    difference between two dates on one axis rather than between a TDB date
+    and a UTC one.
+
+    The alternative is what this exists to prevent: call sites
+    independently reaching for ``time.jd``, ``time.tdb.jd``, ``time.tcb.jd``
+    or ``time.utc.jd``. Those differ by up to about 69 seconds today and by
+    ~20 s more for TCB, all of which is invisible in a rendered orbit and
+    none of which is invisible in a transit ephemeris.
+
+    An unstated ``scale`` reads the instant as
+    :data:`ASTROPY_SCALE_FOR_UNSTATED`, matching :func:`astropy_time`. That
+    does **not** make the scale known: the published epoch is still
+    undetermined to within :attr:`TimeScale.uncertainty_seconds_at`, and
+    that uncertainty keeps travelling on the :class:`Epoch`. A precise
+    target time cannot resolve an imprecise reference one.
+    """
+    target = getattr(time, _ASTROPY_SCALE.get(scale, ASTROPY_SCALE_FOR_UNSTATED))
+    return float(target.jd)
 
 
 class EpochKind(str, Enum):
