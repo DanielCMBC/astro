@@ -1,0 +1,19 @@
+# Line endings.
+#
+# The repository stores Python, docs and data as LF. One file -
+# coordinates/inspector.py - was committed with CRLF under a core.autocrlf
+# setting that preserved it, which made every subsequent edit to the most
+# important coordinate-science module in the tree look like a full-file
+# rewrite and made git blame useless on it.
+#
+# Declaring the convention here fixes it for good: checkout writes LF
+# whatever a contributor's core.autocrlf says, so the same edit produces the
+# same diff on every machine.
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.csv text eol=lf
+
+# Windows batch files are executed by cmd.exe and are conventionally CRLF.
+*.bat text eol=crlf
