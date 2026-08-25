@@ -69,6 +69,13 @@ jobs:
       - name: Astrometric epoch and space-motion tests (Explorer C3.6)
         run: pytest tests/regression/test_explorer_c36.py -q
 
+      # C4a puts a model between the stellar physics and the figure. The
+      # failure it guards against is a plot that recomputes a scientific
+      # value and quietly disagrees with the panel beside it, or that omits
+      # an unmeasured star in silence so the gap reads as "not interesting".
+      - name: HR diagram integration tests (Explorer C4a)
+        run: pytest tests/regression/test_explorer_c4a.py -q
+
       - name: Full test suite
         run: pytest -q
 

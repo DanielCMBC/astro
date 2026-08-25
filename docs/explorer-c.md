@@ -587,3 +587,8 @@ Modelling coordinate epoch and space motion (obstime, proper motion, radial
 velocity, evaluated at one common epoch via Astropy) is what opens the epoch
 gate. That was its own slice, not a detail smuggled into a plotting
 milestone: see [`explorer-c36.md`](explorer-c36.md).
+
+With that arc finished, C4 returns to the scientific plots. The first slice,
+[`explorer-c4a.md`](explorer-c4a.md), asks C1's question of a figure rather
+than of the 3D scene: can a plot show a scientific result without owning
+it?

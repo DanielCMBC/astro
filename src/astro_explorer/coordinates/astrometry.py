@@ -23,10 +23,11 @@ Why the mismatch is not a rounding error
 The offset being added is astronomical-unit scale. The error being ignored
 is proper motion times elapsed time, and for a nearby star it is much
 larger. HD 219134 moves 2.1 arcsec per year and sits 6.5 pc away, so a
-decade off epoch displaces it by about 0.14 mas at that distance - roughly
-135 AU. Adding a 0.2 AU planet offset to a host position that is 135 AU
-wrong is not a small inconsistency; it is an answer dominated entirely by
-the term nobody modelled.
+decade off epoch moves it 21 arcsec on the sky - and one arcsec at one
+parsec is one AU, so that is about 136 AU of transverse displacement.
+Adding a 0.2 AU planet offset to a host position that is 136 AU wrong is
+not a small inconsistency; it is an answer dominated entirely by the term
+nobody modelled.
 
 Three knowledge tiers, not one flag
 -----------------------------------

@@ -15,10 +15,11 @@ import astropy.units as u
 import numpy as np
 
 from ..provenance import Parameter, derived, unknown
-from .constants import L_SUN, R_SUN, SIGMA_SB, SOLAR_EFFECTIVE_TEMPERATURE
+from .constants import L_SUN, SIGMA_SB, SOLAR_EFFECTIVE_TEMPERATURE
 
 __all__ = [
     "DiagramKind",
+    "luminosity_ratio_from_radius_and_teff",
     "luminosity_from_radius_and_teff",
     "absolute_magnitude_from_luminosity",
     "equilibrium_temperature",
@@ -56,6 +57,47 @@ class DiagramKind(str, Enum):
         return "Effective temperature (K)"
 
 
+def luminosity_ratio_from_radius_and_teff(radius_solar, teff_k):
+    """``L / L_sun`` from ``L = 4 pi R^2 sigma T^4``, on scalars or arrays.
+
+    The bare arithmetic, with no provenance and no units bookkeeping, so
+    that the two callers who need it use the *same* formula:
+
+    * :func:`luminosity_from_radius_and_teff`, the provenance-aware wrapper
+      the records and panels go through;
+    * the HR diagram's background population, which has thousands of
+      catalogue rows and cannot afford one :class:`Parameter` each.
+
+    Before Explorer C4a the second of those carried its own inline
+    ``R^2 (T/T_sun)^4``, which is the same identity written twice - and the
+    plotting layer recomputing stellar physics is exactly what the golden
+    rule forbids. The two agree now because there is one of them.
+
+    Non-finite or non-positive inputs come back as NaN rather than as a
+    plausible number, so a caller that forgets to filter gets NaN.
+    """
+    radius = np.asarray(radius_solar, dtype=np.float64)
+    temperature = np.asarray(teff_k, dtype=np.float64)
+
+    usable = (
+        np.isfinite(radius)
+        & np.isfinite(temperature)
+        & (radius > 0.0)
+        & (temperature > 0.0)
+    )
+
+    # Expressed against the solar reference rather than in SI, because the
+    # answer wanted is a ratio and the constants then cancel exactly.
+    solar_teff = float(SOLAR_EFFECTIVE_TEMPERATURE.to_value(u.K))
+    ratio = np.where(
+        usable,
+        np.square(np.where(usable, radius, 1.0))
+        * np.power(np.where(usable, temperature, solar_teff) / solar_teff, 4.0),
+        np.nan,
+    )
+    return float(ratio) if ratio.ndim == 0 else ratio
+
+
 def luminosity_from_radius_and_teff(
     radius_solar: Parameter | float | None,
     teff: Parameter | float | None,
@@ -76,8 +118,7 @@ def luminosity_from_radius_and_teff(
     if not np.isfinite(radius) or not np.isfinite(temperature) or radius <= 0 or temperature <= 0:
         return unknown(u.L_sun, provenance="4 pi R^2 sigma T^4")
 
-    luminosity = (4.0 * np.pi * (radius * R_SUN) ** 2 * SIGMA_SB * (temperature * u.K) ** 4).to(u.W)
-    value = float((luminosity / L_SUN).decompose().value)
+    value = float(luminosity_ratio_from_radius_and_teff(radius, temperature))
 
     rel = 0.0
     if radius_param is not None and radius_param.error_plus is not None and radius:

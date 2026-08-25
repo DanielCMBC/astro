@@ -49,9 +49,16 @@ modules were added that the roadmap did not name:
   science to render primitives, which the golden rule needs somewhere;
 * `docs/roadmap-status.md` - this file.
 
-`data/gaia.py` and `data/simbad.py` are not present: nothing consumes them
-yet, and an empty module that pretends to be an integration is worse than
-its absence. `physics/gravity.py` is likewise deferred with Phase 10.
+`data/gaia.py` arrived with Explorer C3.6, which is the slice that
+actually consumes it: astrometric epoch and space motion need a catalogue
+that states a reference epoch, and the NASA archive does not. It is a real
+provider - exact `gaia_dr3_id` cross-match, validation, an atomic offline
+cache - rather than a placeholder, because that was the condition for adding
+it at all.
+
+`data/simbad.py` is still absent: nothing consumes it yet, and an empty
+module that pretends to be an integration is worse than its absence.
+`physics/gravity.py` is likewise deferred with Phase 10.
 
 ## Section 21 - development phases
 
@@ -207,6 +214,7 @@ A final time-layer review accepted the split and raised two more:
 | C3.5 SystemFrame -> ICRS basis | done - `coordinates/tangent.py`; the local tangent triad and the rotation C3 lacked. Canonical frame is `+X` = East, `+Y` = North, `+Z` = away from the observer, because the ascending node is the receding crossing; a catalogued node is a position angle and reaches the rotation only through `theta = pi/2 - Omega_PA`. Publication is additionally gated on node convention, node sense (a measured value is only modulo 180), pole degeneracy and coordinate epoch. See [`explorer-c.md`](explorer-c.md) |
 | C3.5.1 node semantics on the production path | done - `physics/node_semantics.py`; the PA -> azimuth conversion C3.5 defined but never wired in now gates all three production routes (`_display_angles`, `SystemSlice.state`, `orientation_guides`), so a normalised `Omega_PA = 0` is drawn North rather than East. `NodeSenseEvidence` makes the resolving evidence a closed set with `SYSTEMIC_RADIAL_VELOCITY` explicitly non-resolving |
 | C3.6 astrometric epoch and space motion | done - `coordinates/astrometry.py` and `data/gaia.py`; the `epoch_resolved` boolean is deleted and replaced by `AstrometricState` / `PropagatedAstrometry`. Gaia DR3 is the astrometric authority, reached through the archive's own `gaia_dr3_id` rather than a cone search, with `ref_epoch` stored and `pmra` mapped directly to `pm_ra_cosdec`. Three knowledge tiers keep a propagated *direction* from being published as a 3D position, a missing proper motion or radial velocity stays UNKNOWN while a measured zero stays zero, and Astropy owns the propagation. The validated cache is committed, so runtime is offline and a failed refresh keeps the old data. Three clocks - host, target star and planet - are compared as instants through one shared tolerance, and the planet's is structural: a bare AU offset carries no epoch and cannot open the gate. `DIRECTION_ONLY` is documented and enforced as a zero-RV realization rather than a measured direction. Publication additionally requires a complete physical orientation - inclination, planet-frame argument of periapsis under a stated convention, and the node's convention and sense - because the node gates alone are necessary and not sufficient. See [`explorer-c36.md`](explorer-c36.md) |
+| C4a HR diagram integration | done - `physics/hr_diagram.py`; `HRPlacement` is the single crossing point from stellar physics to the figure, holding the star's own `Parameter` objects rather than copies of their numbers, so the marker and the info panel cannot disagree. The axis conventions are stated (`TEFF_AXIS` hot-to-the-left, `LUMINOSITY_AXIS` log10 L/L_sun) so a colour-magnitude diagram cannot be substituted quietly. An unknown temperature or luminosity produces no coordinate and is annotated rather than silently omitted, a non-positive luminosity is refused rather than clamped, and `ui/plots/hr.py` no longer carries its own Stefan-Boltzmann identity. The background population is an `HRPopulation` rather than bare arrays, so a published `st_lum` and a derived luminosity are drawn with different markers instead of as one cloud, and the hand-entered main-sequence line is labelled an illustrative guide with no catalogue provenance. See [`explorer-c4a.md`](explorer-c4a.md) |
 | planet -> selected star distance | implemented, gated - rests on a real absolute planet vector and is blocked by the same gates, so nothing in the current snapshot publishes one. Never falls back to the host-to-star separation |
 | coordinate epoch and space motion | not started - `SkyPosition` has no obstime, proper motion or radial velocity, so instantaneous absolute positions stay withheld. Opening that gate is the next coordinate-physics slice |
 | C4 scientific plot integration (HR diagram, blackbody, spectra) | not started |
@@ -214,8 +222,12 @@ A final time-layer review accepted the split and raised two more:
 Deferred by review section 6: separating `active_coordinate_frame` from a
 `presentation_state`, which is wanted before the final timed free-flight
 camera and explicitly does not block Explorer B. A persistent internal
-entity id with catalogue aliases (Gaia `source_id`, SIMBAD) is deferred to
-the database/synchronisation work, which is the layer that can store it.
+entity id with catalogue aliases (SIMBAD, and others) is deferred to the
+database/synchronisation work, which is the layer that can store it. The
+Gaia `source_id` half of that is now real: C3.6 keys astrometry on the
+archive's own `gaia_dr3_id` and keeps the committed host map beside the
+cache, so a host's Gaia identity survives a scene rebuild without being
+re-derived from a position.
 
 ## Legacy prototype
 
@@ -308,6 +320,7 @@ Earth-like values" is enforced by
   exist (see the Section 4 table above).
 * **Section 17, N-body.** REBOUND is declared as the `dynamics` extra and
   nothing else. Phase 10.
-* **Section 11 remote sources.** Gaia and SIMBAD synchronisation is designed
-  for (`SolutionPolicy`, the staging pipeline) but only the NASA TAP fetcher
-  is implemented.
+* **Section 11 remote sources.** NASA TAP and Gaia DR3 are both
+  implemented - the second by C3.6, with its own validation and atomic
+  cache in `data/gaia.py`. SIMBAD synchronisation is still designed for
+  (`SolutionPolicy`, the staging pipeline) and not written.

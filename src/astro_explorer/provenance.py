@@ -19,6 +19,7 @@ import astropy.units as u
 __all__ = [
     "Status",
     "Parameter",
+    "combined_status",
     "unknown",
     "measured",
     "derived",
@@ -232,6 +233,31 @@ class Parameter:
             "retrieved": None if self.retrieved is None else self.retrieved.isoformat(),
             "note": self.note,
         }
+
+
+def combined_status(*parameters: "Parameter") -> Status:
+    """The status a value computed from ``parameters`` is entitled to.
+
+    Deliberately pessimistic, in this order: anything unknown makes the
+    result unknown; anything assumed for visualisation makes the result
+    assumed, however solid the arithmetic; otherwise the result is derived,
+    because it was computed rather than observed.
+
+    The middle rule is the one with teeth. ``a(1-e)`` is an exact identity,
+    so it is tempting to report a derived periapsis from an assumed
+    semimajor axis - and that would turn a number invented so a picture
+    could be drawn into a quotable orbital distance. The same applies to a
+    star's place on an HR diagram: an assumed luminosity plots at a
+    perfectly definite height.
+
+    Lives here, beside :class:`Status`, because two copies of this rule
+    would eventually disagree about the same pair of inputs.
+    """
+    if any(not p.is_known for p in parameters):
+        return Status.UNKNOWN
+    if any(p.status is Status.ASSUMED_FOR_VISUALIZATION for p in parameters):
+        return Status.ASSUMED_FOR_VISUALIZATION
+    return Status.DERIVED
 
 
 def _today() -> date:

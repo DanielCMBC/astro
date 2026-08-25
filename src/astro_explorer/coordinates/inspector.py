@@ -52,7 +52,7 @@ import astropy.units as u
 import numpy as np
 
 from ..physics.timed_state import TimedOrbitalState, same_instant
-from ..provenance import Parameter, Status, derived, unknown
+from ..provenance import Parameter, Status, combined_status, derived, unknown
 from .astrometry import PropagatedAstrometry
 from .frames import Frame, SkyPosition
 from .tangent import absolute_position_blockers, system_offset_to_icrs_pc
@@ -263,24 +263,12 @@ class CoordinateRow:
         return text
 
 
-def _combined_status(*parameters: Parameter) -> Status:
-    """The status a value computed from ``parameters`` is entitled to.
-
-    Deliberately pessimistic, in this order: anything unknown makes the
-    result unknown; anything assumed for visualisation makes the result
-    assumed, however solid the arithmetic; otherwise the result is derived,
-    because it was computed rather than observed.
-
-    The middle rule is the one with teeth. ``a(1-e)`` is an exact identity,
-    so it is tempting to report a derived periapsis from an assumed
-    semimajor axis - and that would turn a number invented so a picture
-    could be drawn into a quotable orbital distance.
-    """
-    if any(not p.is_known for p in parameters):
-        return Status.UNKNOWN
-    if any(p.status is Status.ASSUMED_FOR_VISUALIZATION for p in parameters):
-        return Status.ASSUMED_FOR_VISUALIZATION
-    return Status.DERIVED
+#: The pessimistic status rule now lives in :mod:`astro_explorer.provenance`,
+#: beside :class:`~astro_explorer.provenance.Status` itself, so the coordinate
+#: inspector and the C4a HR placement cannot drift apart about what an
+#: assumed input entitles a computed value to claim. Kept under the old name
+#: because every call site in this module reads better for it.
+_combined_status = combined_status
 
 
 def _with_status(value: float, unit, status: Status, provenance: str, note: str = "") -> Parameter:
